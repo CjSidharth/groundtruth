@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exam Flashcards</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div id="progress-text">Card 0 of 0</div>
+        <div class="flashcard" id="flashcard">
+            <div class="card-face card-front" id="card-question">
+                <!-- Question will be loaded here -->
+            </div>
+            <div class="card-face card-back" id="card-answer">
+                <!-- Answer will be loaded here -->
+            </div>
+        </div>
+        <div class="navigation">
+            <button id="prev-button">◀ Previous (Left Arrow)</button>
+            <button id="flip-button">Flip Card (Spacebar)</button>
+            <button id="next-button">Next (Right Arrow) ▶</button>
+        </div>
+        <div class="instructions">
+            Use arrow keys for navigation and spacebar to flip.
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+
+</html>
