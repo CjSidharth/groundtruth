@@ -192,7 +192,7 @@ elif st.session_state.view == 'detail':
 
     st.subheader("📝 Your Notes")
     current_note = st.session_state.progress['notes'].get(note_key, "")
-    new_note = st.text_area("Notes:", value=current_note, height=200, label_visibility="collapsed", placeholder="Add keywords...", key=f"note_{note_key}")
+    new_note = st.text_area("Notes:", value=current_note, height=550, label_visibility="collapsed", placeholder="Add keywords...", key=f"note_{note_key}")
 
     st.divider()
     st.subheader("🐍 Python Code (Optional)")
