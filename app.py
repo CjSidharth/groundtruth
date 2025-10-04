@@ -111,6 +111,21 @@ with st.sidebar:
         selected_marks = master_df.index
 
     review_status = st.radio("Status:", ('All', 'Reviewed', 'Not Reviewed'), horizontal=True)
+    st.divider() # Add a separator for clarity
+    search_query = st.text_input("🔍 Search Questions & Notes")
+
+# -- NEW: SEARCH FILTER
+if search_query:
+    # Create a boolean mask for questions that match the query (case-insensitive)
+    question_mask = master_df['Question'].str.contains(search_query, case=False, na=False)
+    
+    # Also, search within your saved notes for a much more powerful search
+    notes = st.session_state.progress.get('notes', {})
+    matching_ids = {qid for qid, note in notes.items() if search_query.lower() in note.lower()}
+    notes_mask = master_df['StableID'].isin(matching_ids)
+
+    # Apply the filter: show a row if the query is in the question OR in the notes
+    master_df = master_df[question_mask | notes_mask]
 
 # --- Filtering Logic ---
 filtered_df = master_df.copy()
@@ -233,15 +248,65 @@ elif st.session_state.view == 'detail':
         st.rerun()
 
 else: # List View
-    st.subheader("📊 Chapter Progress")
+
+    # --- CHAPTER PROGRESS (This is where the fix is applied) ---
+    st.subheader("Chapter Progress (for current filter)") # Renamed for clarity
+
+    # Get the set of 'done' question IDs once
+    done_qids = set(st.session_state.progress.get('done_questions', []))
+
     if len(chapters) > 0:
-        progress_cols = st.columns(len(chapters))
-        for i, chapter in enumerate(chapters):
-            chapter_qids = set(master_df[master_df['Chapter'] == chapter]['StableID'])
-            total = len(chapter_qids); done_count = len(chapter_qids.intersection(done_qids))
-            with progress_cols[i]: st.metric(label=chapter, value=f"{done_count}/{total}"); st.progress(done_count / total if total > 0 else 0)
+        # We now use the same list of chapters from the multiselect filter
+        # to ensure the dashboard matches the view.
+        progress_cols = st.columns(len(selected_chapters))
+        for i, chapter in enumerate(selected_chapters):
+            # --- FIX: Calculate metrics based on the filtered DataFrame ---
+            
+            # 1. Get all questions in the current filtered view that belong to this chapter
+            chapter_questions_in_filter = filtered_df[filtered_df['Chapter'] == chapter]
+            total_in_chapter_and_filter = len(chapter_questions_in_filter)
+
+            # 2. Of those, find out how many are marked as 'done'
+            chapter_qids_in_filter = set(chapter_questions_in_filter['StableID'])
+            done_in_chapter_and_filter = len(chapter_qids_in_filter.intersection(done_qids))
+
+            with progress_cols[i]:
+                # Only show the metric if there are any questions for that chapter in the filter
+                if total_in_chapter_and_filter > 0:
+                    st.metric(label=chapter, value=f"{done_in_chapter_and_filter}/{total_in_chapter_and_filter}")
+                    st.progress(done_in_chapter_and_filter / total_in_chapter_and_filter)
+                else:
+                    # Optional: Show a disabled-looking metric if no questions match
+                    st.metric(label=chapter, value="0/0")
+                    st.progress(0)
+            # --- END FIX ---
+
+    st.subheader("Filtered Progress Dashboard") # Renamed for clarity
+    
+    # --- FIX: All calculations now use the 'filtered_df' DataFrame ---
+    total_questions_filtered = len(filtered_df)
+    
+    # Find the INTERSECTION of done questions and the questions currently visible
+    done_qids = set(st.session_state.progress.get('done_questions', []))
+    filtered_qids = set(filtered_df['StableID'])
+    done_count_filtered = len(filtered_qids.intersection(done_qids))
+    
+    remaining_count = total_questions_filtered - done_count_filtered
+    # Calculate progress percentage based on the filtered set
+    progress_percent = done_count_filtered / total_questions_filtered if total_questions_filtered > 0 else 0
+
+    # Display the new, dynamic metrics
+    p_cols = st.columns(3)
+    p_cols[0].metric("Matching Questions", f"{total_questions_filtered}") # Renamed for clarity
+    p_cols[1].metric("Reviewed in this Set", f"{done_count_filtered} ({int(progress_percent * 100)}%)")
+    p_cols[2].metric("Remaining in this Set", f"{remaining_count}")
+    
+    st.progress(progress_percent)
+    # --- END FIX ---
+
     st.divider()
-    st.header(f"📖 Question Bank ({len(filtered_df)} questions found)")
+    
+    st.header(f"Question Bank ({len(filtered_df)} questions found)")
     max_page = max(0, math.ceil(len(filtered_df) / PAGE_SIZE) - 1)
     if st.session_state.page_number > max_page: st.session_state.page_number = 0
     start_idx = st.session_state.page_number * PAGE_SIZE; end_idx = start_idx + PAGE_SIZE

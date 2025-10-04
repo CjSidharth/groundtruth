@@ -44,7 +44,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const currentCard = flashcards[currentIndex];
         questionEl.innerHTML = `<strong>Q:</strong> ${currentCard.question}`;
 
-        let answerHTML = `<strong>A:</strong> ${currentCard.note.replace(/\n/g, '<br>')}`;
+        let noteContent = currentCard.note || ""; // Handle empty notes
+        let answerHTML = `<strong>A:</strong> ${marked.parse(noteContent)}`;
 
         if (currentCard.code && currentCard.code.trim() !== "") {
             const escapedCode = currentCard.code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
