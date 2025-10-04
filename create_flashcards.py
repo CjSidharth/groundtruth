@@ -8,42 +8,36 @@ import shutil
 # --- CONFIGURATION ---
 DATA_DIR = "data"
 PROGRESS_DIR = "progress"
-DEPLOY_DIR = "qb_deploy" # The new output folder
-STATIC_FILES = ["index.html", "style.css", "script.js"] # Files to copy
+DEPLOY_DIR = "qb_deploy" 
+STATIC_FILES = ["index.html", "style.css", "script.js"] 
+DEPLOY_IMG_DIR = os.path.join(DEPLOY_DIR, "images")
 # --- END CONFIGURATION ---
 
-# --- 1. Get Subject Name from Command-Line Argument ---
 if len(sys.argv) < 2:
     print("\n❌ Error: Missing subject name.")
     print("   Usage: python3 create_flashcards.py <SubjectFolderName>")
-    print("   Example: python3 create_flashcards.py Software_Engineering")
-    sys.exit(1) # Exit the script with an error code
+    sys.exit(1) 
 
 SUBJECT_TO_EXPORT = sys.argv[1]
 print(f"\n🚀 Starting export process for subject: '{SUBJECT_TO_EXPORT}'...")
 
-# --- 2. Create the Clean Deployment Directory ---
 if not os.path.exists(DEPLOY_DIR):
     os.makedirs(DEPLOY_DIR)
     print(f"✅ Created deployment directory: '{DEPLOY_DIR}'")
 
-# --- File and Folder Paths ---
+if not os.path.exists(DEPLOY_IMG_DIR):
+    os.makedirs(DEPLOY_IMG_DIR)
+    print(f"✅ Created deployment image directory: '{DEPLOY_IMG_DIR}'")
+
 subject_path = os.path.join(DATA_DIR, SUBJECT_TO_EXPORT)
 progress_file_path = os.path.join(PROGRESS_DIR, f"{SUBJECT_TO_EXPORT}_progress.json")
 output_json_path = os.path.join(DEPLOY_DIR, "flashcard_data.json")
 
-
 def generate_stable_id(row):
-    """
-    Helper function to create the stable ID.
-    MUST EXACTLY MATCH THE LOGIC IN app.py
-    """
     sr_no_col = str(row.get('Sr. No.', row.name))
     question_slice = re.sub(r'\W+', '', str(row['Question'])[:30])
     return f"{row['Chapter']}_{sr_no_col}_{question_slice}"
 
-
-# --- 3. Load all questions from CSVs ---
 all_dfs = []
 if not os.path.exists(subject_path):
     print(f"❌ Error: Subject folder '{subject_path}' not found. Please check the subject name.")
@@ -66,22 +60,18 @@ master_df.columns = master_df.columns.str.strip()
 master_df['StableID'] = master_df.apply(generate_stable_id, axis=1)
 print(f"✅ Loaded and processed {len(master_df)} total questions.")
 
-
-# --- 4. Load the notes from the progress file ---
+# --- Load the entire progress file ---
+progress_data = {}
 try:
     with open(progress_file_path, 'r') as f:
         progress_data = json.load(f)
-    notes = progress_data.get("notes", {})
-    if not notes:
-        print(f"⚠️ Warning: No notes found in '{progress_file_path}'. The flashcard file will be empty.")
-    else:
-        print(f"✅ Successfully loaded {len(notes)} notes.")
-except FileNotFoundError:
-    print(f"❌ Error: Progress file not found at '{progress_file_path}'.")
-    sys.exit(1)
+    print(f"✅ Successfully loaded progress data from '{progress_file_path}'.")
+except (FileNotFoundError, json.JSONDecodeError):
+    print(f"⚠️ Warning: Progress file not found or is empty at '{progress_file_path}'. Starting without any saved progress.")
 
+notes = progress_data.get("notes", {})
 
-# --- 5. Create the flashcard data ---
+# --- Create the flashcard data ---
 noted_qids = set(notes.keys())
 flashcard_df = master_df[master_df['StableID'].isin(noted_qids)].copy()
 
@@ -89,20 +79,36 @@ flashcard_list = []
 for _, row in flashcard_df.iterrows():
     stable_id = row['StableID']
     if stable_id in notes and notes[stable_id].strip() != "":
-        flashcard_list.append({
+        # Base data for all subjects
+        flashcard_data = {
             "question": row['Question'],
             "note": notes[stable_id],
             "chapter": row['Chapter'],
             "marks": int(row.get('Marks', 0))
-        })
+        }
 
-# --- 6. Save the flashcard_data.json to the deploy folder ---
+        # --- FIX: Always check for code and image data ---
+        code = progress_data.get("code", {}).get(stable_id, "")
+        image = progress_data.get("images", {}).get(stable_id, "")
+        flashcard_data["code"] = code
+        flashcard_data["image"] = image
+
+        # Also, only copy the image if it exists
+        if image:
+            source_image_path = os.path.join(subject_path, "images", image)
+            if os.path.exists(source_image_path):
+                shutil.copy(source_image_path, DEPLOY_IMG_DIR)
+                print(f"🖼️  Copied image '{image}'")
+            else:
+                print(f"⚠️ Warning: Image file not found at '{source_image_path}'")
+        
+        flashcard_list.append(flashcard_data)
+        # --- END FIX ---
+
 with open(output_json_path, 'w') as f:
     json.dump(flashcard_list, f, indent=2)
 print(f"✅ Created '{output_json_path}' with {len(flashcard_list)} flashcards.")
 
-
-# --- 7. Copy the static website files to the deploy folder ---
 for file_name in STATIC_FILES:
     if os.path.exists(file_name):
         shutil.copy(file_name, DEPLOY_DIR)
@@ -112,4 +118,3 @@ for file_name in STATIC_FILES:
 
 print(f"\n✨ Success! ✨")
 print(f"Your deployable static site is ready in the '{DEPLOY_DIR}' folder.")
-print(f"You can now zip this folder, deploy it, or open its 'index.html' file.")

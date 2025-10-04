@@ -6,10 +6,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Exam Flashcards</title>
     <link rel="stylesheet" href="style.css">
+    <!-- highlight.js stylesheet -->
+    <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css">
 </head>
 
 <body>
     <div class="container">
+        <!-- Mobile Navigation Buttons -->
+        <div class="mobile-nav" id="mobile-prev-button">◀</div>
+        <div class="mobile-nav" id="mobile-next-button">▶</div>
+
         <div id="progress-text">Card 0 of 0</div>
         <div class="flashcard" id="flashcard">
             <div class="card-face card-front" id="card-question">
@@ -28,6 +35,8 @@
             Use arrow keys for navigation and spacebar to flip.
         </div>
     </div>
+    <!-- highlight.js script -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
     <script src="script.js"></script>
 </body>
 

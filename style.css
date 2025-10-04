@@ -30,12 +30,12 @@ body {
     border: 1px solid #333;
     border-radius: 12px;
     flex-grow: 1;
-    /* This makes the card fill the available space */
     perspective: 1000px;
     cursor: pointer;
     position: relative;
     transition: transform 0.6s;
     transform-style: preserve-3d;
+    will-change: transform;
 }
 
 .flashcard.is-flipped {
@@ -62,6 +62,31 @@ body {
     align-items: flex-start;
     text-align: left;
     overflow-y: auto;
+    flex-direction: column;
+    justify-content: flex-start;
+}
+
+.card-back h3 {
+    margin-bottom: 5px;
+    margin-top: 15px;
+}
+
+.card-back pre {
+    width: 100%;
+    margin-top: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    background-color: #282c34;
+    padding: 1em;
+    border-radius: 8px;
+    font-size: 0.8em;
+    box-sizing: border-box;
+}
+
+.card-back img {
+    margin-top: 10px;
+    border-radius: 8px;
+    max-width: 100%;
 }
 
 .navigation {
@@ -69,7 +94,6 @@ body {
     display: flex;
     justify-content: space-between;
     gap: 10px;
-    /* Add space between buttons */
 }
 
 button {
@@ -82,7 +106,6 @@ button {
     cursor: pointer;
     transition: background-color 0.2s;
     flex-grow: 1;
-    /* Make buttons share space */
 }
 
 button:hover {
@@ -95,12 +118,54 @@ button:hover {
     font-size: 0.9em;
 }
 
+/* --- Mobile Side Navigation --- */
+.mobile-nav {
+    display: none;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    width: 45px;
+    height: 45px;
+    background-color: rgba(255, 255, 255, 0.15);
+    color: white;
+    border-radius: 50%;
+    font-size: 1.5em;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    transition: background-color 0.2s;
+}
+
+.mobile-nav:hover {
+    background-color: rgba(255, 255, 255, 0.3);
+}
+
+#mobile-prev-button {
+    left: 10px;
+}
+
+#mobile-next-button {
+    right: 10px;
+}
+
 /* --- MOBILE-FRIENDLY STYLES --- */
 @media (max-width: 600px) {
     body {
         height: auto;
         padding-top: 15px;
         padding-bottom: 15px;
+    }
+
+    .mobile-nav {
+        display: flex;
+    }
+
+    .navigation {
+        display: none;
     }
 
     .container {
@@ -110,22 +175,14 @@ button:hover {
 
     .card-face {
         font-size: 1.2em;
-        /* Smaller font for question */
     }
 
     .card-back {
         font-size: 1em;
-        /* Smaller font for answer */
-    }
-
-    .navigation {
-        flex-direction: column;
-        /* Stack buttons vertically */
     }
 
     button {
         padding: 20px;
-        /* Taller buttons for easy tapping */
         font-size: 1.1em;
     }
 }

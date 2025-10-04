@@ -60,7 +60,6 @@ def load_data(subject):
     master_df = pd.concat(all_questions, ignore_index=True)
     master_df.columns = master_df.columns.str.strip()
     
-    # --- STABLE ID LOGIC ---
     sr_no_col = master_df.get('Sr. No.', pd.Series(master_df.index, name='Sr. No.')).astype(str)
     master_df['StableID'] = master_df['Chapter'].astype(str) + '_' + \
                              sr_no_col + '_' + \
@@ -100,12 +99,27 @@ with st.sidebar:
     st.divider()
     chapters = sorted(master_df['Chapter'].unique())
     selected_chapters = st.multiselect("Chapter(s):", chapters, default=chapters)
-    selected_category = st.multiselect("Category:", master_df['Category'].unique(), default=master_df['Category'].unique())
-    selected_marks = st.multiselect("Marks:", sorted(master_df['Marks'].unique()), default=sorted(master_df['Marks'].unique()))
+    # Handle cases where columns might not exist
+    if 'Category' in master_df.columns:
+        selected_category = st.multiselect("Category:", master_df['Category'].unique(), default=master_df['Category'].unique())
+    else:
+        selected_category = master_df.index # A trick to select all if column doesn't exist
+    
+    if 'Marks' in master_df.columns:
+        selected_marks = st.multiselect("Marks:", sorted(master_df['Marks'].unique()), default=sorted(master_df['Marks'].unique()))
+    else:
+        selected_marks = master_df.index
+
     review_status = st.radio("Status:", ('All', 'Reviewed', 'Not Reviewed'), horizontal=True)
 
-# --- Filtering Logic (Now uses StableID) ---
-filtered_df = master_df[master_df['Chapter'].isin(selected_chapters) & master_df['Category'].isin(selected_category) & master_df['Marks'].isin(selected_marks)].copy()
+# --- Filtering Logic ---
+filtered_df = master_df.copy()
+if 'Category' in filtered_df.columns:
+    filtered_df = filtered_df[filtered_df['Category'].isin(selected_category)]
+if 'Marks' in filtered_df.columns:
+    filtered_df = filtered_df[filtered_df['Marks'].isin(selected_marks)]
+filtered_df = filtered_df[filtered_df['Chapter'].isin(selected_chapters)]
+
 done_qids = set(st.session_state.progress['done_questions'])
 if review_status == 'Reviewed': filtered_df = filtered_df[filtered_df['StableID'].isin(done_qids)]
 elif review_status == 'Not Reviewed': filtered_df = filtered_df[~filtered_df['StableID'].isin(done_qids)]
@@ -115,10 +129,8 @@ filtered_df.reset_index(drop=True, inplace=True)
 if st.session_state.view == 'flashcard':
     st.header("🗂️ Flashcard Review Session")
     
-    # --- FIX: Use StableID to find notes ---
     noted_qids = set(st.session_state.progress['notes'].keys())
     flashcard_deck = filtered_df[filtered_df['StableID'].isin(noted_qids)].reset_index(drop=True)
-    # --- END FIX ---
     
     if flashcard_deck.empty:
         st.warning("No notes found for questions matching filters. Add notes in the 'Question List' view.")
@@ -128,7 +140,7 @@ if st.session_state.view == 'flashcard':
         question = flashcard_deck.iloc[st.session_state.flashcard_index]
         with st.container(height=500, border=True):
             st.subheader(f"Q: {question['Question']}")
-            st.caption(f"Chapter: {question['Chapter']} | Marks: {question['Marks']}")
+            st.caption(f"Chapter: {question['Chapter']} | Marks: {question.get('Marks', 'N/A')}")
             if not st.session_state.card_flipped:
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Show My Notes (Flip Card)", type="primary"): st.session_state.card_flipped = True; st.rerun()
@@ -154,43 +166,80 @@ elif st.session_state.view == 'detail':
         st.warning("Selected question not available in current filter. Returning to list.")
         st.session_state.view = 'list'; st.rerun()
     question = filtered_df.iloc[q_index]
-
-    # --- FIX: Use StableID for notes key ---
     note_key = question['StableID']
-    # --- END FIX ---
     
-    current_note = st.session_state.progress['notes'].get(note_key, "")
-    new_note = st.text_area("Notes:", value=current_note, height=250, key=f"note_{selected_subject}_{note_key}",
-                            label_visibility="collapsed", placeholder="Add keywords...")
-    def save_note_if_changed():
-        if new_note != current_note:
-            st.session_state.progress['notes'][note_key] = new_note
-            save_progress(selected_subject, st.session_state.progress)
-            st.toast("Note saved!", icon="✅")
     nav_cols = st.columns([1, 5, 1])
-    if nav_cols[0].button("⬅️ Back"): save_note_if_changed(); st.session_state.view = 'list'; st.rerun()
+    if nav_cols[0].button("⬅️ Back"): st.session_state.view = 'list'; st.rerun()
     nav_cols[2].write(f"Q {q_index + 1} of {len(filtered_df)}")
     st.subheader(f"Q: {question['Question']}")
-    st.caption(f"Chapter: {question['Chapter']} | Sr.No: {question.get('Sr. No.', 'N/A')} | Marks: {question['Marks']}")
+    st.caption(f"Chapter: {question['Chapter']} | Sr.No: {question.get('Sr. No.', 'N/A')} | Marks: {question.get('Marks', 'N/A')}")
     st.divider()
+
     st.subheader("📝 Your Notes")
-    if st.button("Save Note", type="primary"): save_note_if_changed(); st.rerun()
+    current_note = st.session_state.progress['notes'].get(note_key, "")
+    new_note = st.text_area("Notes:", value=current_note, height=200, label_visibility="collapsed", placeholder="Add keywords...", key=f"note_{note_key}")
+
     st.divider()
+    st.subheader("🐍 Python Code (Optional)")
+    current_code = st.session_state.progress.get("code", {}).get(note_key, "")
+    new_code = st.text_area("Code:", value=current_code, height=250, label_visibility="collapsed", key=f"code_{note_key}")
+
+    st.subheader("🖼️ Image (Optional)")
+    current_image = st.session_state.progress.get("images", {}).get(note_key, "")
+    if current_image:
+        image_path = os.path.join(DATA_DIR, selected_subject, "images", current_image)
+        if os.path.exists(image_path): st.image(image_path, width=400)
+        else: st.warning("Saved image file not found.")
+    uploaded_file = st.file_uploader("Upload an image:", type=["png", "jpg", "jpeg"], key=f"upload_{note_key}")
+
+    # --- NEW FEATURE: Central save function ---
+    def save_all_changes():
+        # Save note if changed
+        if new_note != current_note:
+            st.session_state.progress['notes'][note_key] = new_note
+        
+        # Save code if changed
+        if new_code != current_code:
+            if 'code' not in st.session_state.progress: st.session_state.progress['code'] = {}
+            st.session_state.progress['code'][note_key] = new_code
+        
+        # Save new image if uploaded
+        if uploaded_file is not None:
+            image_dir = os.path.join(DATA_DIR, selected_subject, "images")
+            if not os.path.exists(image_dir): os.makedirs(image_dir)
+            with open(os.path.join(image_dir, uploaded_file.name), "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            if 'images' not in st.session_state.progress: st.session_state.progress['images'] = {}
+            st.session_state.progress['images'][note_key] = uploaded_file.name
+        
+        save_progress(selected_subject, st.session_state.progress)
+        st.toast("Saved!", icon="✅")
+
+    st.divider()
+    if st.button("Save All", type="primary"):
+        save_all_changes()
+        st.rerun()
+    
+    st.divider()
+    # --- RESTORED FEATURE: Auto-save on navigation ---
     nav_cols_bottom = st.columns(2)
     if nav_cols_bottom[0].button("◀ Prev Q", use_container_width=True, disabled=(q_index == 0)):
-        save_note_if_changed(); st.session_state.current_question_index -= 1; st.rerun()
+        save_all_changes()
+        st.session_state.current_question_index -= 1
+        st.rerun()
     if nav_cols_bottom[1].button("Next Q ▶", use_container_width=True, disabled=(q_index >= len(filtered_df) - 1)):
-        save_note_if_changed(); st.session_state.current_question_index += 1; st.rerun()
+        save_all_changes()
+        st.session_state.current_question_index += 1
+        st.rerun()
 
 else: # List View
     st.subheader("📊 Chapter Progress")
-    progress_cols = st.columns(len(chapters))
-    for i, chapter in enumerate(chapters):
-        # --- FIX: Use StableID for progress calculation ---
-        chapter_qids = set(master_df[master_df['Chapter'] == chapter]['StableID'])
-        # --- END FIX ---
-        total = len(chapter_qids); done_count = len(chapter_qids.intersection(done_qids))
-        with progress_cols[i]: st.metric(label=chapter, value=f"{done_count}/{total}"); st.progress(done_count / total if total > 0 else 0)
+    if len(chapters) > 0:
+        progress_cols = st.columns(len(chapters))
+        for i, chapter in enumerate(chapters):
+            chapter_qids = set(master_df[master_df['Chapter'] == chapter]['StableID'])
+            total = len(chapter_qids); done_count = len(chapter_qids.intersection(done_qids))
+            with progress_cols[i]: st.metric(label=chapter, value=f"{done_count}/{total}"); st.progress(done_count / total if total > 0 else 0)
     st.divider()
     st.header(f"📖 Question Bank ({len(filtered_df)} questions found)")
     max_page = max(0, math.ceil(len(filtered_df) / PAGE_SIZE) - 1)
@@ -198,10 +247,8 @@ else: # List View
     start_idx = st.session_state.page_number * PAGE_SIZE; end_idx = start_idx + PAGE_SIZE
     paginated_df = filtered_df.iloc[start_idx:end_idx]
     for _, row in paginated_df.iterrows():
-        # --- FIX: Use StableID for done status and keys ---
         stable_id = row['StableID']
         is_done = stable_id in done_qids
-        # --- END FIX ---
         col1, col2 = st.columns([0.1, 0.9])
         with col1:
             new_is_done = st.checkbox(f"Mark {stable_id}", value=is_done,
@@ -211,7 +258,7 @@ else: # List View
             sr_no_display = f"{row.get('Sr. No.', '')}. " if pd.notna(row.get('Sr. No.')) else ""
             if is_done: st.markdown(f"<span style='opacity: 0.5; text-decoration: line-through;'>{sr_no_display}{row['Question']}</span>", unsafe_allow_html=True)
             else: st.markdown(f"**{sr_no_display}{row['Question']}**")
-            st.caption(f"Chapter: {row['Chapter']} | Marks: {row['Marks']}")
+            st.caption(f"Chapter: {row['Chapter']} | Marks: {row.get('Marks', 'N/A')}")
             if st.button("Add/Edit Notes", key=f"review_{selected_subject}_{stable_id}", type="secondary"):
                 st.session_state.view = 'detail'; st.session_state.current_question_index = filtered_df.index[filtered_df['StableID'] == stable_id][0]; st.rerun()
         if new_is_done != is_done:
