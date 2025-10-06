@@ -60,7 +60,6 @@ master_df.columns = master_df.columns.str.strip()
 master_df['StableID'] = master_df.apply(generate_stable_id, axis=1)
 print(f"✅ Loaded and processed {len(master_df)} total questions.")
 
-# --- Load the entire progress file ---
 progress_data = {}
 try:
     with open(progress_file_path, 'r') as f:
@@ -69,41 +68,45 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     print(f"⚠️ Warning: Progress file not found or is empty at '{progress_file_path}'. Starting without any saved progress.")
 
+# Get all parts of the progress data
 notes = progress_data.get("notes", {})
+codes = progress_data.get("code", {})
+images = progress_data.get("images", {})
 
-# --- Create the flashcard data ---
-noted_qids = set(notes.keys())
-flashcard_df = master_df[master_df['StableID'].isin(noted_qids)].copy()
+# We consider any question with a note, code, or image entry as potentially exportable.
+exportable_qids = set(notes.keys()) | set(codes.keys()) | set(images.keys())
+flashcard_df = master_df[master_df['StableID'].isin(exportable_qids)].copy()
 
 flashcard_list = []
 for _, row in flashcard_df.iterrows():
     stable_id = row['StableID']
-    if stable_id in notes and notes[stable_id].strip() != "":
-        # Base data for all subjects
+    
+    # --- THIS IS THE FIX ---
+    # Check if there is any content (note, code, or image) to justify creating a flashcard.
+    note_content = notes.get(stable_id, "").strip()
+    code_content = codes.get(stable_id, "").strip()
+    image_content = images.get(stable_id, "").strip()
+
+    if note_content or code_content or image_content:
+        # --- END FIX ---
+        
         flashcard_data = {
             "question": row['Question'],
-            "note": notes[stable_id],
+            "note": notes.get(stable_id, ""), # Use .get() to avoid errors if key is missing
+            "code": codes.get(stable_id, ""),
+            "image": images.get(stable_id, ""),
             "chapter": row['Chapter'],
             "marks": int(row.get('Marks', 0))
         }
+        flashcard_list.append(flashcard_data)
 
-        # --- FIX: Always check for code and image data ---
-        code = progress_data.get("code", {}).get(stable_id, "")
-        image = progress_data.get("images", {}).get(stable_id, "")
-        flashcard_data["code"] = code
-        flashcard_data["image"] = image
-
-        # Also, only copy the image if it exists
-        if image:
-            source_image_path = os.path.join(subject_path, "images", image)
+        if image_content:
+            source_image_path = os.path.join(subject_path, "images", image_content)
             if os.path.exists(source_image_path):
                 shutil.copy(source_image_path, DEPLOY_IMG_DIR)
-                print(f"🖼️  Copied image '{image}'")
+                print(f"🖼️  Copied image '{image_content}'")
             else:
                 print(f"⚠️ Warning: Image file not found at '{source_image_path}'")
-        
-        flashcard_list.append(flashcard_data)
-        # --- END FIX ---
 
 with open(output_json_path, 'w') as f:
     json.dump(flashcard_list, f, indent=2)

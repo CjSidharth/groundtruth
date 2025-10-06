@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetch('flashcard_data.json')
         .then(response => response.json())
         .then(data => {
-            flashcards = data.sort(() => Math.random() - 0.5); // Shuffle deck on load
+            flashcards = data
             if (flashcards.length > 0) {
                 displayCard();
             } else {
@@ -42,7 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const currentCard = flashcards[currentIndex];
-        questionEl.innerHTML = `<strong>Q:</strong> ${currentCard.question}`;
+        questionEl.innerHTML = `<strong>Q:</strong> ${currentCard.question} (${currentCard.marks}m)`;
 
         let noteContent = currentCard.note || ""; // Handle empty notes
         let answerHTML = `<strong>A:</strong> ${marked.parse(noteContent)}`;
