@@ -6,7 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Exam Flashcards</title>
     <link rel="stylesheet" href="style.css">
-    <!-- highlight.js stylesheet -->
     <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css">
 </head>
@@ -18,26 +17,37 @@
         <div class="mobile-nav" id="mobile-next-button">▶</div>
 
         <div id="progress-text">Card 0 of 0</div>
+
+        <!-- In index.html, replace your .filters div -->
+
+        <div class="filters-mobile">
+            <div class="filter-toggle" id="filter-toggle">
+                <span>Filter by Chapter & Marks</span>
+                <span>▼</span>
+            </div>
+            <div class="filter-options" id="filter-options">
+                <select id="chapter-filter">
+                    <option value="all">All Chapters</option>
+                </select>
+                <select id="marks-filter">
+                    <option value="all">All Marks</option>
+                </select>
+            </div>
+        </div>
+
         <div class="flashcard" id="flashcard">
-            <div class="card-face card-front" id="card-question">
-                <!-- Question will be loaded here -->
-            </div>
-            <div class="card-face card-back" id="card-answer">
-                <!-- Answer will be loaded here -->
-            </div>
+            <div class="card-face card-front" id="card-question"></div>
+            <div class="card-face card-back" id="card-answer"></div>
         </div>
+
         <div class="navigation">
-            <button id="prev-button">◀ Previous (Left Arrow)</button>
-            <button id="flip-button">Flip Card (Spacebar)</button>
-            <button id="next-button">Next (Right Arrow) ▶</button>
-        </div>
-        <div class="instructions">
-            Use arrow keys for navigation and spacebar to flip.
+            <button id="prev-button">◀ Previous</button>
+            <button id="flip-button">Flip Card</button>
+            <button id="next-button">Next ▶</button>
         </div>
     </div>
-    <!-- highlight.js script -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
     <script src="script.js"></script>
 </body>
 

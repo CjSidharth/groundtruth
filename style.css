@@ -186,3 +186,64 @@ button:hover {
         font-size: 1.1em;
     }
 }
+
+/* Add this after the #progress-text rule */
+.filters {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 15px;
+    justify-content: center;
+}
+
+.filters select {
+    flex-grow: 1;
+    padding: 10px;
+    background-color: #161a25;
+    color: #e1e1e1;
+    border: 1px solid #333;
+    border-radius: 8px;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+/* Add these new rules to style.css */
+.filter-toggle {
+    background-color: #161a25;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 12px 15px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.filter-options {
+    display: none;
+    /* Hidden by default */
+    flex-direction: column;
+    gap: 10px;
+    padding: 15px;
+    background-color: #1a1f2c;
+    border: 1px solid #333;
+    border-radius: 0 0 8px 8px;
+    margin-top: -11px;
+    /* Overlap with the toggle button */
+}
+
+/* This class will be added by JavaScript to show the options */
+.filter-options.is-open {
+    display: flex;
+}
+
+
+/* Add this inside your existing @media (max-width: 600px) block */
+@media (max-width: 600px) {
+
+    /* ... your other mobile styles ... */
+    .filters {
+        flex-direction: column;
+        /* Stack filters vertically on mobile */
+    }
+}
