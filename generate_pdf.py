@@ -153,27 +153,24 @@ def create_pdf_direct(subject, chapter):
         .note-content h2 {{ font-size: 1.3em; }}
         .note-content h3 {{ font-size: 1.1em; }}
 
-        /* --- FIX 1: Robust fix for bullet points --- */
+       /* --- FIX: Robust fix for bullet points using ::marker --- */
         .note-content ul {{
-            list-style: none; /* Turn off the default problematic bullet */
-            padding-left: 1.5em;
+            padding-left: 1.5em; /* Keep indentation */
             margin-bottom: 1em;
         }}
         .note-content ol {{
-            padding-left: 1.5em; /* Keep ordered lists standard */
+            padding-left: 1.5em; /* Standard indentation for ordered lists */
         }}
-        .note-content li::before {{
-            /* Create a custom bullet using a safe character */
-            content: "- "; 
-            padding-right: 0.5em;
-            /* Prevent the custom bullet from being selected with text */
-            user-select: none;
+        .note-content li::marker {{
+            /* Set the content of the actual marker. You can use '•','→', etc. */
+            content: "• ";
+            font-size: 1.2em; /* You can even style it */
+            color: #555;
         }}
-        .note-content ol > li::before {{
-            content: ""; /* Ensure this doesn't apply to ordered lists */
-            padding-right: 0;
+        .note-content ol li::marker {{
+            content: normal; /* Resets the marker for ordered lists so they show numbers */
         }}
-        /* --- END FIX 1 --- */
+        /* --- END FIX --- */
 
         .note-content code {{
             background-color: #eee;
