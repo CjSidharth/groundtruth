@@ -10,7 +10,7 @@ from pygments import highlight
 from pygments.lexers import get_lexer_by_name, TextLexer
 from pygments.formatters import HtmlFormatter
 from pygments.util import ClassNotFound
-import markdown  # <<< NEW: Added for Markdown rendering
+import markdown
 # --- END NEW ---
 
 # --- CONFIGURATION ---
@@ -70,7 +70,6 @@ def create_pdf_direct(subject, chapter):
 
     font_available = check_and_download_font()
 
-    # --- CHANGE 1: Use a dark theme for Pygments ---
     html_formatter = HtmlFormatter(style='monokai')
     pygments_css = html_formatter.get_style_defs('.highlight')
 
@@ -85,7 +84,6 @@ def create_pdf_direct(subject, chapter):
             font-family: {'"{}"'.format(FONT_NAME) if font_available else 'monospace'};
             font-size: 11pt;
             line-height: 1.5;
-            /* Added text color for better readability on white background */
             color: #333;
         }}
         
@@ -109,17 +107,17 @@ def create_pdf_direct(subject, chapter):
             }}
         }}
 
-        h1 {{
+        /* --- FIX 1: Make the chapter title selector specific --- */
+        .chapter-title {{
             font-size: 24pt;
             text-align: center;
             color: #333;
-            page-break-before: always;
+            page-break-before: always; /* This now ONLY applies to chapter titles */
             margin-bottom: 2cm;
         }}
 
         .card {{
             page-break-before: always;
-            /* Avoid breaking a card across pages if possible */
             page-break-inside: avoid;
         }}
         
@@ -147,31 +145,49 @@ def create_pdf_direct(subject, chapter):
             display: block;
             margin-top: 0.5cm;
         }}
+        
+        /* --- FIX 1 (Continued): Add non-breaking styles for Markdown headings --- */
+        .note-content h1, .note-content h2, .note-content h3 {{
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+            line-height: 1.2;
+        }}
+        .note-content h1 {{ font-size: 1.5em; }} /* e.g., # Heading */
+        .note-content h2 {{ font-size: 1.3em; }} /* e.g., ## Heading */
+        .note-content h3 {{ font-size: 1.1em; }} /* e.g., ### Heading */
 
-        /* --- CHANGE 3: Add basic styling for Markdown elements --- */
-        .note-content ul, .note-content ol {{
-            padding-left: 1.5em;
+        /* --- FIX 2: Explicitly define list styles to prevent font artifacts --- */
+        .note-content ul {{
+            list-style-type: disc; /* Use a standard solid circle */
+            padding-left: 2em;
             margin-bottom: 1em;
+        }}
+        .note-content ol {{
+            list-style-type: decimal; /* Use numbers for ordered lists */
+            padding-left: 2em;
+            margin-bottom: 1em;
+        }}
+        .note-content ul ul, .note-content ol ul {{
+            list-style-type: circle; /* Use a standard empty circle for sub-lists */
+        }}
+        .note-content li {{
+            margin-bottom: 0.25em; /* Cleaner spacing between list items */
         }}
         .note-content code {{
             background-color: #eee;
             padding: 2px 5px;
             border-radius: 3px;
             font-size: 0.9em;
+            color: #333;
         }}
-        /* --- END CHANGE 3 --- */
         
-        /* Pygments styles generated for the chosen theme */
         {pygments_css}
         
-        /* --- CHANGE 2: CSS for code wrapping --- */
         .highlight pre {{
-            border: 1px solid #444; /* Darker border for dark theme */
+            border: 1px solid #444;
             border-radius: 5px;
             padding: 1em;
             font-size: 9.5pt;
-            
-            /* These properties enable line wrapping */
             white-space: pre-wrap !important;
             word-wrap: break-word !important;
         }}
@@ -186,14 +202,14 @@ def create_pdf_direct(subject, chapter):
 
         if card_data['chapter'] != current_chapter:
             current_chapter = card_data['chapter']
-            html_parts.append(f"<h1>Chapter: {current_chapter}</h1>")
+            # --- FIX 1 (Continued): Use the new specific class for the chapter title ---
+            html_parts.append(f'<h1 class="chapter-title">Chapter: {current_chapter}</h1>')
 
         html_parts.append('<div class="card">')
         html_parts.append(f"<div class='question'>Q: {card_data['question']} ({card_data['marks']}m)</div>")
 
         if card_data['note']:
             html_parts.append("<div class='section-title'>Notes:</div>")
-            # --- CHANGE 3: Render note text from Markdown to HTML ---
             note_html = markdown.markdown(card_data['note'], extensions=['fenced_code', 'tables'])
             html_parts.append(f"<div class='note-content'>{note_html}</div>")
 
