@@ -4,14 +4,14 @@ import json
 import requests
 from pathlib import Path
 
-# --- NEW: Imports for WeasyPrint, Pygments, and Markdown ---
+# --- Imports for WeasyPrint, Pygments, and Markdown ---
 from weasyprint import HTML, CSS
 from pygments import highlight
 from pygments.lexers import get_lexer_by_name, TextLexer
 from pygments.formatters import HtmlFormatter
 from pygments.util import ClassNotFound
 import markdown
-# --- END NEW ---
+# --- END Imports ---
 
 # --- CONFIGURATION ---
 DEPLOY_DIR = "qb_deploy"
@@ -73,7 +73,6 @@ def create_pdf_direct(subject, chapter):
     html_formatter = HtmlFormatter(style='monokai')
     pygments_css = html_formatter.get_style_defs('.highlight')
 
-    # Define the main CSS for the document
     main_css = f"""
         @font-face {{
             font-family: '{FONT_NAME}';
@@ -107,12 +106,11 @@ def create_pdf_direct(subject, chapter):
             }}
         }}
 
-        /* --- FIX 1: Make the chapter title selector specific --- */
         .chapter-title {{
             font-size: 24pt;
             text-align: center;
             color: #333;
-            page-break-before: always; /* This now ONLY applies to chapter titles */
+            page-break-before: always;
             margin-bottom: 2cm;
         }}
 
@@ -146,33 +144,37 @@ def create_pdf_direct(subject, chapter):
             margin-top: 0.5cm;
         }}
         
-        /* --- FIX 1 (Continued): Add non-breaking styles for Markdown headings --- */
         .note-content h1, .note-content h2, .note-content h3 {{
             margin-top: 1.5em;
             margin-bottom: 0.5em;
             line-height: 1.2;
         }}
-        .note-content h1 {{ font-size: 1.5em; }} /* e.g., # Heading */
-        .note-content h2 {{ font-size: 1.3em; }} /* e.g., ## Heading */
-        .note-content h3 {{ font-size: 1.1em; }} /* e.g., ### Heading */
+        .note-content h1 {{ font-size: 1.5em; }}
+        .note-content h2 {{ font-size: 1.3em; }}
+        .note-content h3 {{ font-size: 1.1em; }}
 
-        /* --- FIX 2: Explicitly define list styles to prevent font artifacts --- */
+        /* --- FIX 1: Robust fix for bullet points --- */
         .note-content ul {{
-            list-style-type: disc; /* Use a standard solid circle */
-            padding-left: 2em;
+            list-style: none; /* Turn off the default problematic bullet */
+            padding-left: 1.5em;
             margin-bottom: 1em;
         }}
         .note-content ol {{
-            list-style-type: decimal; /* Use numbers for ordered lists */
-            padding-left: 2em;
-            margin-bottom: 1em;
+            padding-left: 1.5em; /* Keep ordered lists standard */
         }}
-        .note-content ul ul, .note-content ol ul {{
-            list-style-type: circle; /* Use a standard empty circle for sub-lists */
+        .note-content li::before {{
+            /* Create a custom bullet using a safe character */
+            content: "- "; 
+            padding-right: 0.5em;
+            /* Prevent the custom bullet from being selected with text */
+            user-select: none;
         }}
-        .note-content li {{
-            margin-bottom: 0.25em; /* Cleaner spacing between list items */
+        .note-content ol > li::before {{
+            content: ""; /* Ensure this doesn't apply to ordered lists */
+            padding-right: 0;
         }}
+        /* --- END FIX 1 --- */
+
         .note-content code {{
             background-color: #eee;
             padding: 2px 5px;
@@ -193,7 +195,6 @@ def create_pdf_direct(subject, chapter):
         }}
     """
 
-    # Build the HTML content
     html_parts = []
     current_chapter = None
 
@@ -202,39 +203,46 @@ def create_pdf_direct(subject, chapter):
 
         if card_data['chapter'] != current_chapter:
             current_chapter = card_data['chapter']
-            # --- FIX 1 (Continued): Use the new specific class for the chapter title ---
             html_parts.append(f'<h1 class="chapter-title">Chapter: {current_chapter}</h1>')
 
         html_parts.append('<div class="card">')
         html_parts.append(f"<div class='question'>Q: {card_data['question']} ({card_data['marks']}m)</div>")
 
-        if card_data['note']:
+        if card_data.get('note'):
             html_parts.append("<div class='section-title'>Notes:</div>")
             note_html = markdown.markdown(card_data['note'], extensions=['fenced_code', 'tables'])
             html_parts.append(f"<div class='note-content'>{note_html}</div>")
 
-        if card_data['code']:
+        if card_data.get('code'):
             html_parts.append("<div class='section-title'>Code:</div>")
             code_text = card_data['code'].replace('\u200b', '')
             try:
                 lexer = get_lexer_by_name("python")
             except ClassNotFound:
                 lexer = TextLexer()
-            
             highlighted_code = highlight(code_text, lexer, html_formatter)
             html_parts.append(highlighted_code)
 
+        # --- FIX 2: Refactored image handling logic ---
         image_list = card_data.get('image', [])
-        if isinstance(image_list, str): image_list = [image_list]
-
-        if image_list:
-            title = "Outputs:" if len(image_list) > 1 else "Output:"
+        if isinstance(image_list, str):
+            image_list = [image_list]
+        
+        # First, find all image paths that are valid and actually exist
+        valid_images = []
+        for image_file in image_list:
+            if image_file and image_file.strip():
+                image_path = Path(image_dir, image_file)
+                if image_path.is_file():
+                    valid_images.append(image_path)
+        
+        # ONLY if the valid_images list is not empty, add the section
+        if valid_images:
+            title = "Outputs:" if len(valid_images) > 1 else "Output:"
             html_parts.append(f"<div class='section-title'>{title}</div>")
-            for image_file in image_list:
-                if image_file and image_file.strip():
-                    image_path_uri = Path(image_dir, image_file).as_uri()
-                    if os.path.isfile(Path(image_dir, image_file)):
-                        html_parts.append(f'<img src="{image_path_uri}" alt="{image_file}">')
+            for image_path in valid_images:
+                html_parts.append(f'<img src="{image_path.as_uri()}" alt="{image_path.name}">')
+        # --- END FIX 2 ---
         
         html_parts.append('</div>')
 
@@ -251,7 +259,6 @@ def create_pdf_direct(subject, chapter):
     </html>
     """
 
-    # Render the PDF
     print("\n🚀 Rendering PDF with WeasyPrint...")
     html = HTML(string=final_html, base_url=__file__)
     css = CSS(string=main_css)
