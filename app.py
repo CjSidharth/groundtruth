@@ -4,8 +4,10 @@ import os
 import json
 import math
 import re
+import io
 from streamlit.components.v1 import html
-import speech_recognition as sr  # <--- NEW IMPORT
+from faster_whisper import WhisperModel
+import ollama
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Exam Prep Engine", page_icon="📚", layout="wide")
@@ -18,6 +20,19 @@ PROGRESS_DIR = "progress"
 # --- Setup: Create progress directory if it doesn't exist ---
 if not os.path.exists(PROGRESS_DIR):
     os.makedirs(PROGRESS_DIR)
+
+@st.cache_resource
+def load_whisper():
+    print("⬇️  Loading Whisper model...")
+    with st.spinner("Loading AI Ear (Whisper Small)..."):
+        # Changed from "base" to "small" for better accuracy
+        return WhisperModel("small", device="cpu", compute_type="int8")
+
+try:
+    whisper_model = load_whisper()
+except Exception as e:
+    st.error(f"Error loading Whisper model: {e}")
+    st.stop()
 
 # --- Helper Functions ---
 def get_subjects():
@@ -84,7 +99,6 @@ if 'current_subject' not in st.session_state or st.session_state.current_subject
     st.session_state.page_number = 0
     st.session_state.flashcard_index = 0
     st.session_state.card_flipped = False
-    # New state for audio clearing
     st.session_state.audio_key_counter = 0 
 
 master_df = load_data(selected_subject)
@@ -180,75 +194,170 @@ elif st.session_state.view == 'detail':
         st.session_state.view = 'list'; st.rerun()
     question = filtered_df.iloc[q_index]
     note_key = question['StableID']
-    
-    # Define the key for the text area explicitly so we can target it
     text_area_key = f"note_{note_key}"
     
+    # Navigation Header
     nav_cols = st.columns([1, 5, 1])
     if nav_cols[0].button("⬅️ Back"): st.session_state.view = 'list'; st.rerun()
     nav_cols[2].write(f"Q {q_index + 1} of {len(filtered_df)}")
+    
+    # Question Details
     st.subheader(f"Q: {question['Question']}")
     st.caption(f"Chapter: {question['Chapter']} | Sr.No: {question.get('Sr. No.', 'N/A')} | Marks: {question.get('Marks', 'N/A')}")
     st.divider()
 
     st.subheader("📝 Your Notes")
+
+    # --- TAB INDENT SCRIPT ---
+    def enable_tab_indent():
+        js_code = """
+        <script>
+        const textareas = window.parent.document.querySelectorAll('textarea');
+        textareas.forEach(textarea => {
+            textarea.addEventListener('keydown', function(e) {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    var start = this.selectionStart;
+                    var end = this.selectionEnd;
+                    this.value = this.value.substring(0, start) + "    " + this.value.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 4;
+                }
+            });
+        });
+        </script>
+        """
+        html(js_code, height=0)
+    enable_tab_indent()
     
-    # --- START: VOICE TO TEXT LOGIC ---
+    # --- START: ADVANCED VOICE LOGIC ---
     if 'audio_key_counter' not in st.session_state: st.session_state.audio_key_counter = 0
+    if 'temp_voice_data' not in st.session_state: st.session_state.temp_voice_data = None
 
-    # Audio Widget
-    audio_val = st.audio_input("🎤 Record Voice Note", key=f"audio_{note_key}_{st.session_state.audio_key_counter}")
+    # Only show recorder if we aren't currently previewing a processed note
+    if not st.session_state.temp_voice_data:
+        
+        # 1. Controls Row
+        c1, c2, c3 = st.columns([0.5, 0.25, 0.25])
+        with c1:
+            audio_val = st.audio_input("🎤 Record Voice Note", key=f"audio_{note_key}_{st.session_state.audio_key_counter}")
+        with c2:
+            st.write("") # Spacing
+            st.write("") 
+            use_ai = st.toggle("✨ AI Analysis", value=True)
+        with c3:
+            st.write("") # Spacing
+            # FIXED: Changed label_visibility to 'collapsed' (valid option)
+            model_choice = st.selectbox("AI Model", ["3b (Smart)", "1b (Fast)"], label_visibility="collapsed", help="Select AI Model")
+            selected_model = "llama3.2:3b" if "3b" in model_choice else "llama3.2:1b"
 
-    if audio_val:
-        # Show a spinner so you know it's processing
-        with st.spinner("Transcribing audio... (sending to Google)"):
-            r = sr.Recognizer()
-            transcribed_text = ""
-            try:
-                with sr.AudioFile(audio_val) as source:
-                    audio_data = r.record(source)
-                    transcribed_text = r.recognize_google(audio_data)
-            except sr.UnknownValueError:
-                st.toast("Could not understand audio", icon="🙉")
-            except sr.RequestError as e:
-                st.toast(f"Speech service error: {e}", icon="⚠️")
+        # 2. Gatekeeper Logic (Transcribe vs Reset)
+        if audio_val:
+            st.info("Audio captured. Ready to process?")
+            
+            b1, b2 = st.columns(2)
+            
+            # Button to Start Processing
+            if b1.button("⚡ Transcribe & Analyze", type="primary", use_container_width=True):
+                
+                # A. Transcribe (This part is fast, so a spinner is fine)
+                with st.spinner("👂 Transcribing audio..."):
+                    audio_bytes = audio_val.read()
+                    audio_buffer = io.BytesIO(audio_bytes)
+                    segments, info = whisper_model.transcribe(audio_buffer, beam_size=1)
+                    raw_text = " ".join([segment.text for segment in segments]).strip()
 
-            if transcribed_text:
-                # 1. Get current text from the WIDGET state if possible, otherwise storage
-                # This ensures we don't lose anything you just typed but didn't save
-                current_text = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
-                
-                # 2. Append new text
-                if current_text:
-                    updated_note = current_text + "\n\n" + transcribed_text
-                else:
-                    updated_note = transcribed_text
-                
-                # 3. CRITICAL FIX: Update Storage AND The Widget Key
-                st.session_state.progress['notes'][note_key] = updated_note
-                st.session_state[text_area_key] = updated_note # <--- THIS FIXES THE VISUAL LAG
-                
-                # 4. Increment counter to clear audio widget
+                if raw_text:
+                    ai_response = ""
+                    
+                    # B. AI Analysis (THIS IS WHERE WE STREAM)
+                    if use_ai:
+                        try:
+                            prompt = f"""
+                            Context: The student is answering the following exam question.
+                            Question: "{question['Question']}"
+                            
+                            Student's Recorded Answer: "{raw_text}"
+                            
+                            Task:
+                            1. "Transcript": Clean up the student's grammar/formatting slightly.
+                            2. "AI Insight": Provide a concise, correct answer to the Question. Mention missing points.
+                            
+                            Output Format: Markdown (Use ### headers).
+                            """
+                            
+                            # Create a placeholder to stream text into
+                            stream_box = st.empty()
+                            full_streamed_text = ""
+                            
+                            # Stream the response
+                            for chunk in ollama.generate(model=selected_model, prompt=prompt, stream=True):
+                                content = chunk['response']
+                                full_streamed_text += content
+                                stream_box.markdown(full_streamed_text + "▌") # ▌ adds a typing cursor effect
+                            
+                            ai_response = full_streamed_text
+                            stream_box.empty() # Clear the streaming box once done
+                            
+                        except Exception as e:
+                            st.error(f"Ollama Error: {e}")
+                    
+                    # Store in TEMP state
+                    st.session_state.temp_voice_data = {
+                        "raw": raw_text,
+                        "ai": ai_response
+                    }
+                    st.rerun()
+            
+            # Button to Reset
+            if b2.button("🔄 Reset / Redo", type="secondary", use_container_width=True):
                 st.session_state.audio_key_counter += 1
-                
-                st.toast("Text appended!", icon="✅")
                 st.rerun()
-    # --- END: VOICE TO TEXT LOGIC ---
+                
+    # --- PREVIEW / CONFIRMATION AREA ---
+    if st.session_state.temp_voice_data:
+        st.success("✅ Transcription Complete! Review before adding.")
+        
+        # Display the AI Generated Content
+        if st.session_state.temp_voice_data["ai"]:
+            st.markdown(st.session_state.temp_voice_data["ai"])
+        else:
+            st.markdown(f"**Transcript:** {st.session_state.temp_voice_data['raw']}")
 
-    # Get the value from session state (which we just updated above if audio was used)
-    # We prioritize the widget's internal state if it exists, otherwise the saved note
+        # Action Buttons
+        btn_col1, btn_col2 = st.columns(2)
+        
+        if btn_col1.button("⬇️ Add to Notes", type="primary", use_container_width=True):
+            current_text = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
+            
+            # Format how it looks in the text box
+            if st.session_state.temp_voice_data['ai']:
+                new_entry = f"\n{st.session_state.temp_voice_data['ai']}\n"
+            else:
+                new_entry = f"\n- {st.session_state.temp_voice_data['raw']}\n"
+
+            updated_note = (current_text + "\n" + new_entry) if current_text else new_entry
+            
+            # Save & Cleanup
+            st.session_state.progress['notes'][note_key] = updated_note
+            st.session_state[text_area_key] = updated_note
+            st.session_state.temp_voice_data = None
+            st.session_state.audio_key_counter += 1
+            st.toast("Notes Appended!", icon="✅")
+            st.rerun()
+
+        if btn_col2.button("❌ Discard Results", type="secondary", use_container_width=True):
+            st.session_state.temp_voice_data = None
+            # We don't increment counter here so they can see the old audio, 
+            # but usually you want to reset to record again:
+            st.session_state.audio_key_counter += 1 
+            st.toast("Discarded", icon="🗑️")
+            st.rerun()
+    # --- END VOICE ---
+
+    # Notes Input
     current_note_value = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
+    new_note = st.text_area("Notes:", value=current_note_value, height=550, label_visibility="collapsed", placeholder="Add keywords...", key=text_area_key)
 
-    new_note = st.text_area(
-        "Notes:", 
-        value=current_note_value, 
-        height=550, 
-        label_visibility="collapsed", 
-        placeholder="Add keywords...", 
-        key=text_area_key # Using the variable we defined earlier
-    )
-
-    # Sync manual typing back to progress state
     if new_note != st.session_state.progress['notes'].get(note_key, ""):
          st.session_state.progress['notes'][note_key] = new_note
 
@@ -262,14 +371,10 @@ elif st.session_state.view == 'detail':
     if current_image:
         image_path = os.path.join(DATA_DIR, selected_subject, "images", current_image)
         if os.path.exists(image_path): st.image(image_path, width=400)
-        else: st.warning("Saved image file not found.")
     uploaded_file = st.file_uploader("Upload an image:", type=["png", "jpg", "jpeg"], key=f"upload_{note_key}")
 
-    # --- Central save function ---
     def save_all_changes():
-        # Note is already syncing via the logic above, but we double check
         st.session_state.progress['notes'][note_key] = new_note
-        
         if new_code != current_code:
             if 'code' not in st.session_state.progress: st.session_state.progress['code'] = {}
             st.session_state.progress['code'][note_key] = new_code
@@ -280,22 +385,28 @@ elif st.session_state.view == 'detail':
                 f.write(uploaded_file.getbuffer())
             if 'images' not in st.session_state.progress: st.session_state.progress['images'] = {}
             st.session_state.progress['images'][note_key] = uploaded_file.name
-        
         save_progress(selected_subject, st.session_state.progress)
         st.toast("Saved!", icon="✅")
 
     st.divider()
+    # 1. Save Button (Extra convenience)
     if st.button("Save All", type="primary"):
         save_all_changes()
         st.rerun()
     
     st.divider()
+    # 2. Navigation Buttons (With Fix applied)
     nav_cols_bottom = st.columns(2)
-    if nav_cols_bottom[0].button("◀ Prev Q", use_container_width=True, disabled=(q_index == 0)):
+    
+    # FIX: We wrapped the conditions in bool(...) to convert numpy.bool to python bool
+    is_first = bool(q_index == 0)
+    is_last = bool(q_index >= len(filtered_df) - 1)
+
+    if nav_cols_bottom[0].button("◀ Prev Q", use_container_width=True, disabled=is_first):
         save_all_changes()
         st.session_state.current_question_index -= 1
         st.rerun()
-    if nav_cols_bottom[1].button("Next Q ▶", use_container_width=True, disabled=(q_index >= len(filtered_df) - 1)):
+    if nav_cols_bottom[1].button("Next Q ▶", use_container_width=True, disabled=is_last):
         save_all_changes()
         st.session_state.current_question_index += 1
         st.rerun()
