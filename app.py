@@ -4,6 +4,8 @@ import os
 import json
 import math
 import re
+from streamlit.components.v1 import html
+import speech_recognition as sr  # <--- NEW IMPORT
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Exam Prep Engine", page_icon="📚", layout="wide")
@@ -82,6 +84,8 @@ if 'current_subject' not in st.session_state or st.session_state.current_subject
     st.session_state.page_number = 0
     st.session_state.flashcard_index = 0
     st.session_state.card_flipped = False
+    # New state for audio clearing
+    st.session_state.audio_key_counter = 0 
 
 master_df = load_data(selected_subject)
 st.title(f"⚡ {selected_subject.replace('_', ' ')} Prep Engine")
@@ -99,11 +103,11 @@ with st.sidebar:
     st.divider()
     chapters = sorted(master_df['Chapter'].unique())
     selected_chapters = st.multiselect("Chapter(s):", chapters, default=chapters)
-    # Handle cases where columns might not exist
+    
     if 'Category' in master_df.columns:
         selected_category = st.multiselect("Category:", master_df['Category'].unique(), default=master_df['Category'].unique())
     else:
-        selected_category = master_df.index # A trick to select all if column doesn't exist
+        selected_category = master_df.index
     
     if 'Marks' in master_df.columns:
         selected_marks = st.multiselect("Marks:", sorted(master_df['Marks'].unique()), default=sorted(master_df['Marks'].unique()))
@@ -111,20 +115,14 @@ with st.sidebar:
         selected_marks = master_df.index
 
     review_status = st.radio("Status:", ('All', 'Reviewed', 'Not Reviewed'), horizontal=True)
-    st.divider() # Add a separator for clarity
+    st.divider()
     search_query = st.text_input("🔍 Search Questions & Notes")
 
-# -- NEW: SEARCH FILTER
 if search_query:
-    # Create a boolean mask for questions that match the query (case-insensitive)
     question_mask = master_df['Question'].str.contains(search_query, case=False, na=False)
-    
-    # Also, search within your saved notes for a much more powerful search
     notes = st.session_state.progress.get('notes', {})
     matching_ids = {qid for qid, note in notes.items() if search_query.lower() in note.lower()}
     notes_mask = master_df['StableID'].isin(matching_ids)
-
-    # Apply the filter: show a row if the query is in the question OR in the notes
     master_df = master_df[question_mask | notes_mask]
 
 # --- Filtering Logic ---
@@ -183,6 +181,9 @@ elif st.session_state.view == 'detail':
     question = filtered_df.iloc[q_index]
     note_key = question['StableID']
     
+    # Define the key for the text area explicitly so we can target it
+    text_area_key = f"note_{note_key}"
+    
     nav_cols = st.columns([1, 5, 1])
     if nav_cols[0].button("⬅️ Back"): st.session_state.view = 'list'; st.rerun()
     nav_cols[2].write(f"Q {q_index + 1} of {len(filtered_df)}")
@@ -191,8 +192,65 @@ elif st.session_state.view == 'detail':
     st.divider()
 
     st.subheader("📝 Your Notes")
-    current_note = st.session_state.progress['notes'].get(note_key, "")
-    new_note = st.text_area("Notes:", value=current_note, height=550, label_visibility="collapsed", placeholder="Add keywords...", key=f"note_{note_key}")
+    
+    # --- START: VOICE TO TEXT LOGIC ---
+    if 'audio_key_counter' not in st.session_state: st.session_state.audio_key_counter = 0
+
+    # Audio Widget
+    audio_val = st.audio_input("🎤 Record Voice Note", key=f"audio_{note_key}_{st.session_state.audio_key_counter}")
+
+    if audio_val:
+        # Show a spinner so you know it's processing
+        with st.spinner("Transcribing audio... (sending to Google)"):
+            r = sr.Recognizer()
+            transcribed_text = ""
+            try:
+                with sr.AudioFile(audio_val) as source:
+                    audio_data = r.record(source)
+                    transcribed_text = r.recognize_google(audio_data)
+            except sr.UnknownValueError:
+                st.toast("Could not understand audio", icon="🙉")
+            except sr.RequestError as e:
+                st.toast(f"Speech service error: {e}", icon="⚠️")
+
+            if transcribed_text:
+                # 1. Get current text from the WIDGET state if possible, otherwise storage
+                # This ensures we don't lose anything you just typed but didn't save
+                current_text = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
+                
+                # 2. Append new text
+                if current_text:
+                    updated_note = current_text + "\n\n" + transcribed_text
+                else:
+                    updated_note = transcribed_text
+                
+                # 3. CRITICAL FIX: Update Storage AND The Widget Key
+                st.session_state.progress['notes'][note_key] = updated_note
+                st.session_state[text_area_key] = updated_note # <--- THIS FIXES THE VISUAL LAG
+                
+                # 4. Increment counter to clear audio widget
+                st.session_state.audio_key_counter += 1
+                
+                st.toast("Text appended!", icon="✅")
+                st.rerun()
+    # --- END: VOICE TO TEXT LOGIC ---
+
+    # Get the value from session state (which we just updated above if audio was used)
+    # We prioritize the widget's internal state if it exists, otherwise the saved note
+    current_note_value = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
+
+    new_note = st.text_area(
+        "Notes:", 
+        value=current_note_value, 
+        height=550, 
+        label_visibility="collapsed", 
+        placeholder="Add keywords...", 
+        key=text_area_key # Using the variable we defined earlier
+    )
+
+    # Sync manual typing back to progress state
+    if new_note != st.session_state.progress['notes'].get(note_key, ""):
+         st.session_state.progress['notes'][note_key] = new_note
 
     st.divider()
     st.subheader("🐍 Python Code (Optional)")
@@ -207,18 +265,14 @@ elif st.session_state.view == 'detail':
         else: st.warning("Saved image file not found.")
     uploaded_file = st.file_uploader("Upload an image:", type=["png", "jpg", "jpeg"], key=f"upload_{note_key}")
 
-    # --- NEW FEATURE: Central save function ---
+    # --- Central save function ---
     def save_all_changes():
-        # Save note if changed
-        if new_note != current_note:
-            st.session_state.progress['notes'][note_key] = new_note
+        # Note is already syncing via the logic above, but we double check
+        st.session_state.progress['notes'][note_key] = new_note
         
-        # Save code if changed
         if new_code != current_code:
             if 'code' not in st.session_state.progress: st.session_state.progress['code'] = {}
             st.session_state.progress['code'][note_key] = new_code
-        
-        # Save new image if uploaded
         if uploaded_file is not None:
             image_dir = os.path.join(DATA_DIR, selected_subject, "images")
             if not os.path.exists(image_dir): os.makedirs(image_dir)
@@ -236,7 +290,6 @@ elif st.session_state.view == 'detail':
         st.rerun()
     
     st.divider()
-    # --- RESTORED FEATURE: Auto-save on navigation ---
     nav_cols_bottom = st.columns(2)
     if nav_cols_bottom[0].button("◀ Prev Q", use_container_width=True, disabled=(q_index == 0)):
         save_all_changes()
@@ -248,61 +301,37 @@ elif st.session_state.view == 'detail':
         st.rerun()
 
 else: # List View
-
-    # --- CHAPTER PROGRESS (This is where the fix is applied) ---
-    st.subheader("Chapter Progress (for current filter)") # Renamed for clarity
-
-    # Get the set of 'done' question IDs once
+    st.subheader("Chapter Progress (for current filter)")
     done_qids = set(st.session_state.progress.get('done_questions', []))
 
     if len(chapters) > 0:
-        # We now use the same list of chapters from the multiselect filter
-        # to ensure the dashboard matches the view.
         progress_cols = st.columns(len(selected_chapters))
         for i, chapter in enumerate(selected_chapters):
-            # --- FIX: Calculate metrics based on the filtered DataFrame ---
-            
-            # 1. Get all questions in the current filtered view that belong to this chapter
             chapter_questions_in_filter = filtered_df[filtered_df['Chapter'] == chapter]
             total_in_chapter_and_filter = len(chapter_questions_in_filter)
-
-            # 2. Of those, find out how many are marked as 'done'
             chapter_qids_in_filter = set(chapter_questions_in_filter['StableID'])
             done_in_chapter_and_filter = len(chapter_qids_in_filter.intersection(done_qids))
 
             with progress_cols[i]:
-                # Only show the metric if there are any questions for that chapter in the filter
                 if total_in_chapter_and_filter > 0:
                     st.metric(label=chapter, value=f"{done_in_chapter_and_filter}/{total_in_chapter_and_filter}")
                     st.progress(done_in_chapter_and_filter / total_in_chapter_and_filter)
                 else:
-                    # Optional: Show a disabled-looking metric if no questions match
                     st.metric(label=chapter, value="0/0")
                     st.progress(0)
-            # --- END FIX ---
 
-    st.subheader("Filtered Progress Dashboard") # Renamed for clarity
-    
-    # --- FIX: All calculations now use the 'filtered_df' DataFrame ---
+    st.subheader("Filtered Progress Dashboard")
     total_questions_filtered = len(filtered_df)
-    
-    # Find the INTERSECTION of done questions and the questions currently visible
-    done_qids = set(st.session_state.progress.get('done_questions', []))
     filtered_qids = set(filtered_df['StableID'])
     done_count_filtered = len(filtered_qids.intersection(done_qids))
-    
     remaining_count = total_questions_filtered - done_count_filtered
-    # Calculate progress percentage based on the filtered set
     progress_percent = done_count_filtered / total_questions_filtered if total_questions_filtered > 0 else 0
 
-    # Display the new, dynamic metrics
     p_cols = st.columns(3)
-    p_cols[0].metric("Matching Questions", f"{total_questions_filtered}") # Renamed for clarity
+    p_cols[0].metric("Matching Questions", f"{total_questions_filtered}")
     p_cols[1].metric("Reviewed in this Set", f"{done_count_filtered} ({int(progress_percent * 100)}%)")
     p_cols[2].metric("Remaining in this Set", f"{remaining_count}")
-    
     st.progress(progress_percent)
-    # --- END FIX ---
 
     st.divider()
     
