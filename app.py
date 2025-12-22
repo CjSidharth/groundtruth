@@ -273,17 +273,35 @@ elif st.session_state.view == 'detail':
                     if use_ai:
                         try:
                             prompt = f"""
-                            Context: The student is answering the following exam question.
-                            Question: "{question['Question']}"
-                            
-                            Student's Recorded Answer: "{raw_text}"
-                            
-                            Task:
-                            1. "Transcript": Clean up the student's grammar/formatting slightly.
-                            2. "AI Insight": Provide a concise, correct answer to the Question. Mention missing points.
-                            
-                            Output Format: Markdown (Use ### headers).
-                            """
+                                You are an AI tutor specializing in viva (oral exam) preparation. Your goal is to critically evaluate a student's spoken answer to an exam question and provide actionable feedback.
+
+                                Here is the exam question:
+                                Question: "{question['Question']}"
+
+                                Here is the student's raw transcript of their spoken answer:
+                                Student's Transcript: "{raw_text}"
+
+                                Please provide your response in the following Markdown format, directly addressing the student:
+
+                                ### 🗣️ Your Refined Transcript
+                                [Clean, grammatically corrected, well-structured (e.g., bullet points or concise paragraphs) version of the student's answer. Remove verbal filler like "um," "uh," repetitions, or irrelevant tangents. Aim for clarity and conciseness.]
+
+                                ### 🧠 Viva Feedback & Improvement Points
+                                Based on the Question and your Refined Transcript, here's how you can improve your oral explanation for a viva:
+                                *   **Strengths:** What did you explain well or correctly? Mention specific concepts or correct terms used.
+                                *   **Gaps/Missing Points:** What crucial concepts, keywords, definitions, or examples were missed, or not fully elaborated? Why are these important?
+                                *   **Clarity & Structure:** Was your explanation easy to follow from start to finish? How could the flow, introduction, or conclusion be improved for a clear verbal delivery?
+                                *   **Depth & Accuracy:** Did you go beyond surface-level definitions? Was all the information factually correct? Point out any inaccuracies.
+
+                                ### ✅ Key Takeaways / Model Answer Snippet
+                                Here are the most important points to include when confidently answering this question in a viva, presented concisely:
+                                *   [Key point 1, concise explanation]
+                                *   [Key point 2, concise explanation]
+                                *   [Key point 3, concise explanation]
+                                ... (Add more if necessary, covering the core elements)
+
+                                Avoid any conversational introduction or conclusion outside of these specific Markdown sections.
+                                """
                             
                             # Create a placeholder to stream text into
                             stream_box = st.empty()
