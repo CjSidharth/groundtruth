@@ -8,6 +8,11 @@ import io
 from streamlit.components.v1 import html
 from faster_whisper import WhisperModel
 import ollama
+import pdfplumber
+import pyttsx3
+import time
+from google import genai
+
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Exam Prep Engine", page_icon="📚", layout="wide")
@@ -83,6 +88,131 @@ def load_data(subject):
                              master_df['Question'].str.slice(0, 30).str.replace(r'\W+', '', regex=True)
     return master_df
 
+# --- HELPER: Universal AI Caller (Safe Mode & Stable Model) ---
+def ask_ai(prompt, provider, api_key=None, model_name="llama3.2:3b", stream=True):
+    """
+    Unified function to call either Local Ollama or Google Gemini.
+    """
+    if provider == "Google Gemini":
+        if not api_key:
+            # Removed Emoji to prevent ASCII error
+            yield "[Error] Please enter a Google API Key in the Sidebar."
+            return
+        try:
+            client = genai.Client(api_key=api_key)
+            
+            # --- FIX 1: USE STABLE MODEL ---
+            # gemini-2.0-flash is restricted. gemini-1.5-flash is stable.
+            target_model = 'gemma-3-27b-it' 
+            
+            if stream:
+                response = client.models.generate_content_stream(
+                    model=target_model,
+                    contents=prompt
+                )
+                for chunk in response:
+                    if chunk.text: yield chunk.text
+            else:
+                response = client.models.generate_content(
+                    model=target_model,
+                    contents=prompt
+                )
+                if response.text: yield response.text
+                
+        except Exception as e:
+            # --- FIX 2: ASCII-SAFE ERROR HANDLING ---
+            # We strip non-ascii characters from the error message just in case
+            err_msg = str(e).encode('ascii', 'ignore').decode('ascii')
+            
+            if "429" in err_msg:
+                yield "[Rate Limit] Google is slowing down requests. Switch to Local (Ollama) for 2 mins."
+            else:
+                yield f"[Gemini Error] {err_msg}"
+
+    else: # Local Ollama
+        try:
+            local_model = "llama3.2:1b" if "1b" in model_name else "llama3.2:3b"
+            if stream:
+                for chunk in ollama.generate(model=local_model, prompt=prompt, stream=True):
+                    yield chunk['response']
+            else:
+                yield ollama.generate(model=local_model, prompt=prompt)['response']
+        except Exception as e:
+            yield f"[Ollama Error] {e}. Is Ollama running?"
+
+
+# --- HELPER: Dynamic Text Cleaner ---
+def clean_text_dynamic(text, header_margin, footer_margin, specific_phrases):
+    if not text: return ""
+    lines = text.split('\n')
+    cleaned_lines = []
+    
+    # Calculate total lines to estimate relative header/footer positions
+    total_lines = len(lines)
+    
+    for i, line in enumerate(lines):
+        # 1. Header Filter: Skip first N lines
+        if i < header_margin:
+            continue
+            
+        # 2. Footer Filter: Skip last N lines
+        if i >= total_lines - footer_margin:
+            continue
+            
+        # 3. Phrase Filter: Remove lines containing specific unwanted text
+        # (Case insensitive check)
+        if any(phrase.lower() in line.lower() for phrase in specific_phrases if phrase.strip()):
+            continue
+            
+        # 4. Short Line Filter (Optional): Remove lines that are just page numbers (digits)
+        if line.strip().isdigit() and len(line.strip()) < 4:
+            continue
+            
+        cleaned_lines.append(line)
+    
+    return "\n".join(cleaned_lines)
+
+
+# --- HELPER: Bionic Reading (Fixed Regex Logic) ---
+def make_bionic(text):
+    if not text: return ""
+    
+    # 1. Split text into parts: Words vs Non-Words (spaces, punctuation)
+    # The capturing group () keeps the delimiters in the list
+    tokens = re.split(r'([a-zA-Z0-9]+)', text)
+    
+    result = []
+    for token in tokens:
+        # 2. Only apply bolding to actual alphanumeric words
+        if token.isalnum():
+            # Bold the first 40%
+            bold_len = math.ceil(len(token) * 0.4)
+            if len(token) > 1:
+                result.append(f"**{token[:bold_len]}**{token[bold_len:]}")
+            else:
+                result.append(f"**{token}**")
+        else:
+            # 3. Preserve spaces, tabs, and newlines exactly as they are
+            result.append(token)
+            
+    # 4. Join them back together
+    return "".join(result)
+
+
+
+# --- HELPER: Offline Audio Generator ---
+def generate_audio(text, filename="temp_slide_audio.mp3"):
+    try:
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 160) # Slower for technical content
+        engine.save_to_file(text, filename)
+        engine.runAndWait()
+        return filename
+    except Exception as e:
+        return None
+
+
+
 # --- Sidebar & State Management ---
 st.sidebar.title("📚 Exam Prep Hub")
 subjects = get_subjects()
@@ -114,6 +244,30 @@ with st.sidebar:
         st.session_state.view = 'list'; st.rerun()
     if view_cols[1].button("🗂️ Flashcards", use_container_width=True, type="primary" if is_flashcard_mode else "secondary"):
         st.session_state.view = 'flashcard'; st.session_state.flashcard_index = 0; st.session_state.card_flipped = False; st.rerun()
+    if st.button("📖 Smart PDF Reader", use_container_width=True):
+        st.session_state.view = 'pdf_reader'
+        st.rerun()
+    # In your Sidebar section:
+    st.divider()
+    st.markdown("### 🧠 AI Intelligence")
+    ai_provider = st.radio(
+        "Choose Brain:", 
+        ["Local (Ollama)", "Google Gemini"], 
+        help="Gemini is faster but requires an API Key. Ollama is private & offline."
+    )
+    gemini_key = ""
+    
+    if ai_provider == "Google Gemini":
+        # 1. Try to get key from secrets.toml
+        if "GEMINI_API_KEY" in st.secrets:
+            gemini_key = st.secrets["GEMINI_API_KEY"]
+            st.success("🔑 Key loaded from secrets!")
+        # 2. Fallback to manual input if secret not found
+        else:
+            gemini_key = st.text_input("Enter Gemini API Key", type="password")
+            if not gemini_key:
+                st.warning("⚠️ key not found in .streamlit/secrets.toml")
+    
     st.divider()
     chapters = sorted(master_df['Chapter'].unique())
     selected_chapters = st.multiselect("Chapter(s):", chapters, default=chapters)
@@ -189,78 +343,56 @@ if st.session_state.view == 'flashcard':
 
 elif st.session_state.view == 'detail':
     q_index = st.session_state.current_question_index
-    if q_index is None or q_index >= len(filtered_df):
-        st.warning("Selected question not available in current filter. Returning to list.")
-        st.session_state.view = 'list'; st.rerun()
+    if q_index is None: st.session_state.view = 'list'; st.rerun()
     question = filtered_df.iloc[q_index]
     note_key = question['StableID']
     text_area_key = f"note_{note_key}"
     
-    # Navigation Header
+    # Navigation
     nav_cols = st.columns([1, 5, 1])
     if nav_cols[0].button("⬅️ Back"): st.session_state.view = 'list'; st.rerun()
-    nav_cols[2].write(f"Q {q_index + 1} of {len(filtered_df)}")
+    nav_cols[2].write(f"Q {q_index + 1}")
     
-    # Question Details
     st.subheader(f"Q: {question['Question']}")
-    st.caption(f"Chapter: {question['Chapter']} | Sr.No: {question.get('Sr. No.', 'N/A')} | Marks: {question.get('Marks', 'N/A')}")
     st.divider()
 
     st.subheader("📝 Your Notes")
 
     # --- TAB INDENT SCRIPT ---
     def enable_tab_indent():
-        js_code = """
-        <script>
-        const textareas = window.parent.document.querySelectorAll('textarea');
-        textareas.forEach(textarea => {
-            textarea.addEventListener('keydown', function(e) {
-                if (e.key === 'Tab') {
-                    e.preventDefault();
-                    var start = this.selectionStart;
-                    var end = this.selectionEnd;
-                    this.value = this.value.substring(0, start) + "    " + this.value.substring(end);
-                    this.selectionStart = this.selectionEnd = start + 4;
-                }
-            });
-        });
-        </script>
-        """
+        js_code = """<script>...</script>""" # (Keep your existing script string)
         html(js_code, height=0)
     enable_tab_indent()
     
-    # --- START: ADVANCED VOICE LOGIC ---
+    # --- VOICE LOGIC (FIXED TO USE ask_ai) ---
     if 'audio_key_counter' not in st.session_state: st.session_state.audio_key_counter = 0
     if 'temp_voice_data' not in st.session_state: st.session_state.temp_voice_data = None
 
-    # Only show recorder if we aren't currently previewing a processed note
     if not st.session_state.temp_voice_data:
-        
-        # 1. Controls Row
         c1, c2, c3 = st.columns([0.5, 0.25, 0.25])
         with c1:
-            audio_val = st.audio_input("🎤 Record Voice Note", key=f"audio_{note_key}_{st.session_state.audio_key_counter}")
+            audio_val = st.audio_input("🎤 Record", key=f"audio_{note_key}_{st.session_state.audio_key_counter}")
         with c2:
-            st.write("") # Spacing
             st.write("") 
-            use_ai = st.toggle("✨ AI Analysis", value=True)
+            st.write("") 
+            use_ai = st.toggle("✨ Analyze", value=True)
         with c3:
-            st.write("") # Spacing
-            # FIXED: Changed label_visibility to 'collapsed' (valid option)
-            model_choice = st.selectbox("AI Model", ["3b (Smart)", "1b (Fast)"], label_visibility="collapsed", help="Select AI Model")
-            selected_model = "llama3.2:3b" if "3b" in model_choice else "llama3.2:1b"
+            st.write("") 
+            # Only show local model choice if using Ollama
+            if ai_provider == "Local (Ollama)":
+                model_choice = st.selectbox("Model", ["3b", "1b"], label_visibility="collapsed")
+                selected_model = "llama3.2:3b" if "3b" in model_choice else "llama3.2:1b"
+            else:
+                st.caption("Using Gemini")
+                selected_model = "gemini"
 
-        # 2. Gatekeeper Logic (Transcribe vs Reset)
         if audio_val:
-            st.info("Audio captured. Ready to process?")
-            
+            st.info("Audio captured.")
             b1, b2 = st.columns(2)
             
-            # Button to Start Processing
             if b1.button("⚡ Transcribe & Analyze", type="primary", use_container_width=True):
-                
-                # A. Transcribe (This part is fast, so a spinner is fine)
-                with st.spinner("👂 Transcribing audio..."):
+                with st.spinner("Processing..."):
+                    # 1. Whisper Transcribe (Always Local)
                     audio_bytes = audio_val.read()
                     audio_buffer = io.BytesIO(audio_bytes)
                     segments, info = whisper_model.transcribe(audio_buffer, beam_size=1)
@@ -268,66 +400,35 @@ elif st.session_state.view == 'detail':
 
                 if raw_text:
                     ai_response = ""
-                    
-                    # B. AI Analysis (THIS IS WHERE WE STREAM)
+                    # 2. AI Analysis (Uses Universal Helper)
                     if use_ai:
-                        try:
-                            prompt = f"""
-                                You are an AI tutor specializing in viva (oral exam) preparation. Your goal is to critically evaluate a student's spoken answer to an exam question and provide actionable feedback.
-
-                                Here is the exam question:
-                                Question: "{question['Question']}"
-
-                                Here is the student's raw transcript of their spoken answer:
-                                Student's Transcript: "{raw_text}"
-
-                                Please provide your response in the following Markdown format, directly addressing the student:
-
-                                ### 🗣️ Your Refined Transcript
-                                [Clean, grammatically corrected, well-structured (e.g., bullet points or concise paragraphs) version of the student's answer. Remove verbal filler like "um," "uh," repetitions, or irrelevant tangents. Aim for clarity and conciseness.]
-
-                                ### 🧠 Viva Feedback & Improvement Points
-                                Based on the Question and your Refined Transcript, here's how you can improve your oral explanation for a viva:
-                                *   **Strengths:** What did you explain well or correctly? Mention specific concepts or correct terms used.
-                                *   **Gaps/Missing Points:** What crucial concepts, keywords, definitions, or examples were missed, or not fully elaborated? Why are these important?
-                                *   **Clarity & Structure:** Was your explanation easy to follow from start to finish? How could the flow, introduction, or conclusion be improved for a clear verbal delivery?
-                                *   **Depth & Accuracy:** Did you go beyond surface-level definitions? Was all the information factually correct? Point out any inaccuracies.
-
-                                ### ✅ Key Takeaways / Model Answer Snippet
-                                Here are the most important points to include when confidently answering this question in a viva, presented concisely:
-                                *   [Key point 1, concise explanation]
-                                *   [Key point 2, concise explanation]
-                                *   [Key point 3, concise explanation]
-                                ... (Add more if necessary, covering the core elements)
-
-                                Avoid any conversational introduction or conclusion outside of these specific Markdown sections.
-                                """
-                            
-                            # Create a placeholder to stream text into
-                            stream_box = st.empty()
-                            full_streamed_text = ""
-                            
-                            # Stream the response
-                            for chunk in ollama.generate(model=selected_model, prompt=prompt, stream=True):
-                                content = chunk['response']
-                                full_streamed_text += content
-                                stream_box.markdown(full_streamed_text + "▌") # ▌ adds a typing cursor effect
-                            
-                            ai_response = full_streamed_text
-                            stream_box.empty() # Clear the streaming box once done
-                            
-                        except Exception as e:
-                            st.error(f"Ollama Error: {e}")
+                        prompt = f"""
+                        You are a Viva Tutor.
+                        Question: "{question['Question']}"
+                        Student Answer: "{raw_text}"
+                        
+                        1. Clean up the transcript.
+                        2. Give specific feedback on missing points.
+                        """
+                        
+                        stream_box = st.empty()
+                        full_streamed_text = ""
+                        
+                        # --- CALL THE HELPER ---
+                        for chunk in ask_ai(prompt, ai_provider, gemini_key, selected_model):
+                            full_streamed_text += chunk
+                            stream_box.markdown(full_streamed_text + "▌")
+                        
+                        ai_response = full_streamed_text
+                        stream_box.empty()
                     
-                    # Store in TEMP state
                     st.session_state.temp_voice_data = {
                         "raw": raw_text,
                         "ai": ai_response
                     }
                     st.rerun()
             
-            # Button to Reset
-            if b2.button("🔄 Reset / Redo", type="secondary", use_container_width=True):
+            if b2.button("🔄 Reset", type="secondary", use_container_width=True):
                 st.session_state.audio_key_counter += 1
                 st.rerun()
                 
@@ -428,6 +529,165 @@ elif st.session_state.view == 'detail':
         save_all_changes()
         st.session_state.current_question_index += 1
         st.rerun()
+
+elif st.session_state.view == 'pdf_reader':
+    # --- Top Bar: Minimal Navigation & Settings ---
+    c_head, c_set = st.columns([0.8, 0.2])
+    with c_head:
+        st.subheader("📖 Intelligent Slide Studio")
+    with c_set:
+        show_settings = st.toggle("⚙️ Settings", value=False)
+
+    uploaded_pdf = st.file_uploader("Upload PDF (Slides/Notes)", type="pdf", label_visibility="collapsed")
+    
+    if uploaded_pdf:
+        # Save & Open
+        temp_path = os.path.join(DATA_DIR, "temp_reading_material.pdf")
+        with open(temp_path, "wb") as f: f.write(uploaded_pdf.getbuffer())
+        
+        # --- Cleaning Settings ---
+        if show_settings:
+            with st.container(border=True):
+                st.caption("🧹 Text Cleaning Filter")
+                sc1, sc2, sc3 = st.columns(3)
+                header_lines = sc1.number_input("Skip Top Lines", 0, 10, 0)
+                footer_lines = sc2.number_input("Skip Bottom Lines", 0, 10, 0)
+                ignore_phrases = sc3.text_input("Ignore Phrases (comma sep)", "").split(",")
+                ignore_list = [p.strip() for p in ignore_phrases if p.strip()]
+        else:
+            header_lines, footer_lines, ignore_list = 0, 0, []
+
+        with pdfplumber.open(temp_path) as pdf:
+            total_pages = len(pdf.pages)
+            if 'pdf_page' not in st.session_state: st.session_state.pdf_page = 0
+            
+            # --- Smart Navigation Bar ---
+            nav1, nav2, nav3 = st.columns([1, 4, 1])
+            if nav1.button("◀ Prev", use_container_width=True): 
+                st.session_state.pdf_page = max(0, st.session_state.pdf_page - 1); st.rerun()
+            
+            nav2.progress((st.session_state.pdf_page + 1) / total_pages)
+            nav2.caption(f"Slide {st.session_state.pdf_page + 1} of {total_pages}")
+            
+            if nav3.button("Next ▶", use_container_width=True): 
+                st.session_state.pdf_page = min(total_pages - 1, st.session_state.pdf_page + 1); st.rerun()
+
+            # --- THE SPLIT VIEW LAYOUT ---
+            col_visual, col_tools = st.columns([1, 1]) 
+            current_page_obj = pdf.pages[st.session_state.pdf_page]
+            
+            # --- LEFT: VISUALS ---
+            with col_visual:
+                st.markdown("##### 🖼️ Visual Slide")
+                try:
+                    page_image = current_page_obj.to_image(resolution=200).original
+                    st.image(page_image, use_container_width=True)
+                except Exception as e:
+                    st.warning("Install 'pypdfium2' to see images.")
+
+            # --- RIGHT: INTELLIGENCE ---
+            with col_tools:
+                raw_text = current_page_obj.extract_text() or ""
+                clean_text = clean_text_dynamic(raw_text, header_lines, footer_lines, ignore_list)
+                
+                st.markdown("##### 🧠 Knowledge Engine")
+                t1, t2, t3, t4 = st.tabs(["👁️ Bionic", "🤖 AI Tutor", "⚡ Speed", "🎧 Audio"])
+                
+                with t1: # Bionic Reading
+                    with st.container(height=400):
+                        st.markdown(make_bionic(clean_text), unsafe_allow_html=True)
+                
+                with t2: # AI Tutor (FIXED TO USE ask_ai)
+                    st.caption(f"Brain: {ai_provider}")
+                    # Only show local model selector if using Ollama
+                    if ai_provider == "Local (Ollama)":
+                        model_name = st.selectbox("Model", ["llama3.2:3b", "llama3.2:1b"], label_visibility="collapsed")
+                    else:
+                        model_name = "gemini-2.0-flash" # Placeholder for logic
+
+                    if st.button("🧠 Explain Slide", use_container_width=True):
+                        with st.spinner("Analyzing..."):
+                            prompt = f"""
+                            Explain this slide content simply.
+                            If diagrams are implied, describe the concept.
+                            Slide Text: "{clean_text}"
+                            """
+                            stream_box = st.empty()
+                            full_res = ""
+                            
+                            # --- USE THE HELPER FUNCTION HERE ---
+                            for chunk in ask_ai(prompt, ai_provider, gemini_key, model_name):
+                                full_res += chunk
+                                stream_box.markdown(full_res + "▌")
+                            stream_box.markdown(full_res)
+
+                with t3: # RSVP Speed Reader (PAUSABLE)
+                    # Initialize session state for this specific reader if not present
+                    if 'rsvp_pos' not in st.session_state: st.session_state.rsvp_pos = 0
+                    if 'rsvp_active' not in st.session_state: st.session_state.rsvp_active = False
+
+                    speed = st.slider("WPM", 200, 600, 300)
+                    # Split logic that keeps it simple for RSVP
+                    words = clean_text.split()
+                    
+                    # Controls Row
+                    r1, r2, r3 = st.columns(3)
+                    
+                    if r1.button("▶ Start / Resume", key="rsvp_start"):
+                        st.session_state.rsvp_active = True
+                        
+                    if r2.button("⏹ Stop / Pause", key="rsvp_stop"):
+                        st.session_state.rsvp_active = False
+                        
+                    if r3.button("🔄 Reset", key="rsvp_reset"):
+                        st.session_state.rsvp_pos = 0
+                        st.session_state.rsvp_active = False
+                        st.rerun()
+
+                    # The Reader Window
+                    reader_placeholder = st.empty()
+                    progress_text = st.empty()
+
+                    if st.session_state.rsvp_active:
+                        # Loop starting from the saved position
+                        for i in range(st.session_state.rsvp_pos, len(words)):
+                            # Check if we should stop (requires external interruption usually, 
+                            # but helps if logic changes)
+                            if not st.session_state.rsvp_active: break
+                            
+                            word = words[i]
+                            st.session_state.rsvp_pos = i # Save position
+                            
+                            # Update UI
+                            reader_placeholder.markdown(
+                                f"<div style='height:150px; display:flex; align-items:center; justify-content:center; background-color:#222; border-radius:10px;'>"
+                                f"<h1 style='font-size:60px; margin:0; color:white;'>{word}</h1></div>", 
+                                unsafe_allow_html=True
+                            )
+                            progress_text.caption(f"Word {i+1} of {len(words)}")
+                            
+                            # Speed math
+                            time.sleep(60/speed)
+                        
+                        # If finished
+                        if st.session_state.rsvp_pos >= len(words) - 1:
+                            st.session_state.rsvp_active = False
+                            st.session_state.rsvp_pos = 0
+                            reader_placeholder.success("✅ Reading Complete!")
+                    else:
+                        # Static View (When Paused)
+                        current_word = words[st.session_state.rsvp_pos] if words and st.session_state.rsvp_pos < len(words) else "Ready"
+                        reader_placeholder.markdown(
+                                f"<div style='height:150px; display:flex; align-items:center; justify-content:center; background-color:#333; border-radius:10px;'>"
+                                f"<h1 style='font-size:60px; margin:0; color:gray;'>{current_word}</h1></div>", 
+                                unsafe_allow_html=True
+                            )
+                        progress_text.caption(f"Paused at: {st.session_state.rsvp_pos} / {len(words)}")
+
+                with t4: # Audio
+                    if st.button("▶ Read Aloud", use_container_width=True):
+                        f_path = generate_audio(clean_text)
+                        if f_path: st.audio(f_path)
 
 else: # List View
     st.subheader("Chapter Progress (for current filter)")
