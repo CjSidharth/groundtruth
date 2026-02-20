@@ -21,6 +21,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let filteredDeck = [];  // This holds the currently active deck
     let currentIndex = 0;
 
+    marked.use(markedKatex({
+        throwOnError: false,
+        output: 'html' // Ensure output is HTML
+    }));
+
     // --- DATA FETCHING ---
     fetch('flashcard_data.json')
         .then(response => response.json())
