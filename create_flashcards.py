@@ -73,6 +73,9 @@ notes = progress_data.get("notes", {})
 codes = progress_data.get("code", {})
 images = progress_data.get("images", {})
 
+# ### 1. NEW: Load the languages dictionary ###
+languages = progress_data.get("languages", {}) 
+
 # We consider any question with a note, code, or image entry as potentially exportable.
 exportable_qids = set(notes.keys()) | set(codes.keys()) | set(images.keys())
 flashcard_df = master_df[master_df['StableID'].isin(exportable_qids)].copy()
@@ -81,19 +84,25 @@ flashcard_list = []
 for _, row in flashcard_df.iterrows():
     stable_id = row['StableID']
     
-    # --- THIS IS THE FIX ---
-    # Check if there is any content (note, code, or image) to justify creating a flashcard.
     note_content = notes.get(stable_id, "").strip()
     code_content = codes.get(stable_id, "").strip()
     image_content = images.get(stable_id, "").strip()
 
+    # Check if there is content to justify creating a card
     if note_content or code_content or image_content:
-        # --- END FIX ---
         
+        # ### 2. NEW: Extract the language for this specific card ###
+        # Default to 'python' if the user never selected a language for this card
+        card_language = languages.get(stable_id, "python")
+
         flashcard_data = {
             "question": row['Question'],
-            "note": notes.get(stable_id, ""), # Use .get() to avoid errors if key is missing
+            "note": notes.get(stable_id, ""),
             "code": codes.get(stable_id, ""),
+            
+            # ### 3. NEW: Add language to the JSON output ###
+            "language": card_language,
+            
             "image": images.get(stable_id, ""),
             "chapter": row['Chapter'],
             "marks": int(row.get('Marks', 0))

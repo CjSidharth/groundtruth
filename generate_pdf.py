@@ -59,7 +59,9 @@ def create_pdf_direct(subject, chapter):
     with open(json_path, 'r', encoding='utf-8') as f:
         all_flashcards = json.load(f)
 
+    # Filter Flashcards
     if chapter.lower() == 'all':
+        # Sort by chapter so they appear in order
         filtered_flashcards = sorted(all_flashcards, key=lambda x: x['chapter'])
     else:
         filtered_flashcards = [c for c in all_flashcards if c['chapter'].lower() == chapter.lower()]
@@ -70,7 +72,10 @@ def create_pdf_direct(subject, chapter):
 
     font_available = check_and_download_font()
 
-    html_formatter = HtmlFormatter(style='monokai')
+    # --- STYLE CONFIGURATION ---
+    # Using 'friendly' or 'colorful' usually looks better on white PDF paper than 'monokai'
+    # but 'monokai' is good if you want a dark code block background.
+    html_formatter = HtmlFormatter(style='monokai', cssclass='highlight')
     pygments_css = html_formatter.get_style_defs('.highlight')
 
     main_css = f"""
@@ -112,6 +117,8 @@ def create_pdf_direct(subject, chapter):
             color: #333;
             page-break-before: always;
             margin-bottom: 2cm;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
         }}
 
         .card {{
@@ -124,6 +131,9 @@ def create_pdf_direct(subject, chapter):
             font-weight: bold;
             color: #000;
             margin-bottom: 0.5cm;
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-left: 5px solid #333;
         }}
 
         .section-title {{
@@ -149,28 +159,11 @@ def create_pdf_direct(subject, chapter):
             margin-bottom: 0.5em;
             line-height: 1.2;
         }}
-        .note-content h1 {{ font-size: 1.5em; }}
-        .note-content h2 {{ font-size: 1.3em; }}
-        .note-content h3 {{ font-size: 1.1em; }}
-
-       /* --- FIX: Robust fix for bullet points using ::marker --- */
-        .note-content ul {{
-            padding-left: 1.5em; /* Keep indentation */
-            margin-bottom: 1em;
-        }}
-        .note-content ol {{
-            padding-left: 1.5em; /* Standard indentation for ordered lists */
-        }}
-        .note-content li::marker {{
-            /* Set the content of the actual marker. You can use '•','→', etc. */
-            content: "• ";
-            font-size: 1.2em; /* You can even style it */
-            color: #555;
-        }}
-        .note-content ol li::marker {{
-            content: normal; /* Resets the marker for ordered lists so they show numbers */
-        }}
-        /* --- END FIX --- */
+        
+        .note-content ul {{ padding-left: 1.5em; margin-bottom: 1em; }}
+        .note-content ol {{ padding-left: 1.5em; }}
+        .note-content li::marker {{ content: "• "; font-size: 1.2em; color: #555; }}
+        .note-content ol li::marker {{ content: normal; }}
 
         .note-content code {{
             background-color: #eee;
@@ -180,15 +173,25 @@ def create_pdf_direct(subject, chapter):
             color: #333;
         }}
         
+        /* Inject Pygments CSS here */
         {pygments_css}
         
-        .highlight pre {{
-            border: 1px solid #444;
+        /* Style the container created by Pygments */
+        .highlight {{
+            background-color: #272822; /* Monokai background */
             border-radius: 5px;
             padding: 1em;
+            margin-bottom: 1em;
+            border: 1px solid #444;
+        }}
+        
+        .highlight pre {{
+            margin: 0;
             font-size: 9.5pt;
             white-space: pre-wrap !important;
             word-wrap: break-word !important;
+            font-family: '{FONT_NAME}', monospace;
+            line-height: 1.4;
         }}
     """
 
@@ -205,27 +208,45 @@ def create_pdf_direct(subject, chapter):
         html_parts.append('<div class="card">')
         html_parts.append(f"<div class='question'>Q: {card_data['question']} ({card_data['marks']}m)</div>")
 
+        # --- NOTES SECTION ---
         if card_data.get('note'):
             html_parts.append("<div class='section-title'>Notes:</div>")
             note_html = markdown.markdown(card_data['note'], extensions=['fenced_code', 'tables'])
             html_parts.append(f"<div class='note-content'>{note_html}</div>")
 
-        if card_data.get('code'):
-            html_parts.append("<div class='section-title'>Code:</div>")
-            code_text = card_data['code'].replace('\u200b', '')
+        # --- CODE SECTION (UPDATED FOR LANGUAGES) ---
+        if card_data.get('code') and card_data['code'].strip():
+            # 1. Get the language from JSON, default to 'python'
+            lang = card_data.get('language', 'python')
+            
+            # 2. Display the language name nicely
+            html_parts.append(f"<div class='section-title'>Code ({lang}):</div>")
+            
+            code_text = card_data['code'].replace('\u200b', '') # Remove zero-width spaces
+            
             try:
-                lexer = get_lexer_by_name("python")
+                # 3. Dynamic Lexer Selection
+                lexer = get_lexer_by_name(lang, stripall=True)
             except ClassNotFound:
+                print(f"      ⚠️ Warning: Lexer for '{lang}' not found. Using text.")
                 lexer = TextLexer()
+            
+            # 4. Generate HTML
             highlighted_code = highlight(code_text, lexer, html_formatter)
             html_parts.append(highlighted_code)
 
-        # --- FIX 2: Refactored image handling logic ---
-        image_list = card_data.get('image', [])
-        if isinstance(image_list, str):
-            image_list = [image_list]
+        # --- IMAGE SECTION ---
+        image_val = card_data.get('image', [])
         
-        # First, find all image paths that are valid and actually exist
+        # Normalize to list
+        if isinstance(image_val, str):
+            image_list = [image_val] if image_val.strip() else []
+        elif isinstance(image_val, list):
+            image_list = image_val
+        else:
+            image_list = []
+        
+        # Filter valid images
         valid_images = []
         for image_file in image_list:
             if image_file and image_file.strip():
@@ -233,15 +254,15 @@ def create_pdf_direct(subject, chapter):
                 if image_path.is_file():
                     valid_images.append(image_path)
         
-        # ONLY if the valid_images list is not empty, add the section
+        # Render valid images
         if valid_images:
             title = "Outputs:" if len(valid_images) > 1 else "Output:"
             html_parts.append(f"<div class='section-title'>{title}</div>")
             for image_path in valid_images:
+                # Use as_uri() for proper file:// path handling in WeasyPrint
                 html_parts.append(f'<img src="{image_path.as_uri()}" alt="{image_path.name}">')
-        # --- END FIX 2 ---
         
-        html_parts.append('</div>')
+        html_parts.append('</div>') # End Card
 
     final_html = f"""
     <!DOCTYPE html>
@@ -266,7 +287,7 @@ def create_pdf_direct(subject, chapter):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or len(sys.argv) > 3:
-        sys.exit("\n❌ Error: Invalid arguments.")
+        sys.exit("\n❌ Error: Invalid arguments.\nUsage: python generate_pdf.py <subject> [chapter|all]")
 
     subject_name = sys.argv[1]
     chapter_name = sys.argv[2] if len(sys.argv) == 3 else 'all'

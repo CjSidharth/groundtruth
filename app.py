@@ -52,9 +52,16 @@ def load_progress(subject):
     filepath = get_progress_filepath(subject)
     if os.path.exists(filepath):
         with open(filepath, 'r') as f:
-            try: return json.load(f)
-            except json.JSONDecodeError: return {"done_questions": [], "notes": {}}
-    return {"done_questions": [], "notes": {}}
+            try: 
+                data = json.load(f)
+                # --- NEW: Ensure compatibility for existing files ---
+                if "languages" not in data: data["languages"] = {}
+                if "code" not in data: data["code"] = {}
+                if "images" not in data: data["images"] = {}
+                return data
+            except json.JSONDecodeError: 
+                return {"done_questions": [], "notes": {}, "code": {}, "languages": {}, "images": {}}
+    return {"done_questions": [], "notes": {}, "code": {}, "languages": {}, "images": {}}
 
 def save_progress(subject, progress):
     filepath = get_progress_filepath(subject)
@@ -326,10 +333,28 @@ if st.session_state.view == 'flashcard':
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Show My Notes (Flip Card)", type="primary"): st.session_state.card_flipped = True; st.rerun()
             if st.session_state.card_flipped:
-                st.markdown("---"); st.subheader("Your Notes:")
+                st.markdown("---")
+                st.subheader("Your Notes:")
+                
+                # 1. Show Text Notes
                 note = st.session_state.progress['notes'].get(question['StableID'], "*No notes.*")
                 note_with_breaks = note.replace('\n', '<br>')
                 st.markdown(note_with_breaks, unsafe_allow_html=True)
+
+                # 2. NEW: Show Code Snippet with Syntax Highlighting
+                code_content = st.session_state.progress.get('code', {}).get(question['StableID'], "")
+                if code_content and code_content.strip():
+                    # Default to 'python' if language not saved (Backward Compatibility)
+                    lang = st.session_state.progress.get('languages', {}).get(question['StableID'], "python")
+                    st.caption(f"💻 Code ({lang}):")
+                    st.code(code_content, language=lang)
+
+                # 3. Show Image
+                img_name = st.session_state.progress.get('images', {}).get(question['StableID'], "")
+                if img_name:
+                    img_path = os.path.join(DATA_DIR, selected_subject, "images", img_name)
+                    if os.path.exists(img_path):
+                        st.image(img_path)
         st.subheader(f"Card {st.session_state.flashcard_index + 1} of {deck_size}")
         nav_cols = st.columns(2)
         if nav_cols[0].button("◀ Prev", use_container_width=True, disabled=(st.session_state.flashcard_index == 0)):
@@ -481,7 +506,23 @@ elif st.session_state.view == 'detail':
          st.session_state.progress['notes'][note_key] = new_note
 
     st.divider()
-    st.subheader("🐍 Python Code (Optional)")
+    
+    # --- NEW: Code Snippet Section with Language Selector ---
+    c_head, c_lang = st.columns([0.7, 0.3])
+    with c_head:
+        st.subheader("💻 Code Snippet (Optional)")
+    with c_lang:
+        # Get saved language or default to python
+        saved_lang = st.session_state.progress.get("languages", {}).get(note_key, "python")
+        
+        # Dropdown options
+        lang_options = ["python", "html", "css", "javascript", "php", "sql", "java", "bash"]
+        
+        # Ensure saved_lang is in options (in case of manual edits)
+        if saved_lang not in lang_options: lang_options.append(saved_lang)
+        
+        selected_lang = st.selectbox("Language", lang_options, index=lang_options.index(saved_lang), key=f"lang_{note_key}", label_visibility="collapsed")
+
     current_code = st.session_state.progress.get("code", {}).get(note_key, "")
     new_code = st.text_area("Code:", value=current_code, height=250, label_visibility="collapsed", key=f"code_{note_key}")
 
@@ -493,10 +534,18 @@ elif st.session_state.view == 'detail':
     uploaded_file = st.file_uploader("Upload an image:", type=["png", "jpg", "jpeg"], key=f"upload_{note_key}")
 
     def save_all_changes():
+        # Save Note
         st.session_state.progress['notes'][note_key] = new_note
-        if new_code != current_code:
-            if 'code' not in st.session_state.progress: st.session_state.progress['code'] = {}
-            st.session_state.progress['code'][note_key] = new_code
+        
+        # Save Code
+        if 'code' not in st.session_state.progress: st.session_state.progress['code'] = {}
+        st.session_state.progress['code'][note_key] = new_code
+        
+        # NEW: Save Language
+        if 'languages' not in st.session_state.progress: st.session_state.progress['languages'] = {}
+        st.session_state.progress['languages'][note_key] = selected_lang
+
+        # Save Image
         if uploaded_file is not None:
             image_dir = os.path.join(DATA_DIR, selected_subject, "images")
             if not os.path.exists(image_dir): os.makedirs(image_dir)
@@ -504,9 +553,10 @@ elif st.session_state.view == 'detail':
                 f.write(uploaded_file.getbuffer())
             if 'images' not in st.session_state.progress: st.session_state.progress['images'] = {}
             st.session_state.progress['images'][note_key] = uploaded_file.name
+        
+        # Write to file
         save_progress(selected_subject, st.session_state.progress)
         st.toast("Saved!", icon="✅")
-
     st.divider()
     # 1. Save Button (Extra convenience)
     if st.button("Save All", type="primary"):
