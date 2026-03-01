@@ -9,20 +9,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const nextButton = document.getElementById('next-button');
     const mobilePrevButton = document.getElementById('mobile-prev-button');
     const mobileNextButton = document.getElementById('mobile-next-button');
-    const filterToggle = document.getElementById('filter-toggle');
-    const filterOptions = document.getElementById('filter-options');
+    const filterToggle = document.getElementById('filter-toggle'); // New
+    const filterOptions = document.getElementById('filter-options'); // New
+
+    // --- NEW: Filter Element Selection ---
     const chapterFilter = document.getElementById('chapter-filter');
     const marksFilter = document.getElementById('marks-filter');
 
     // --- STATE VARIABLES ---
-    let allFlashcards = [];
-    let filteredDeck = [];
+    let allFlashcards = [];   // This holds the original, full deck
+    let filteredDeck = [];  // This holds the currently active deck
     let currentIndex = 0;
 
-    // Configure Marked with KaTeX
     marked.use(markedKatex({
         throwOnError: false,
-        output: 'html'
+        output: 'html' // Ensure output is HTML
     }));
 
     // --- DATA FETCHING ---
@@ -31,8 +32,8 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(data => {
             allFlashcards = data;
             if (allFlashcards.length > 0) {
-                populateFilters();
-                applyFilters();
+                populateFilters(); // New function call
+                applyFilters();    // New function call to set the initial view
             } else {
                 questionEl.textContent = "No flashcards found.";
             }
@@ -42,8 +43,9 @@ document.addEventListener('DOMContentLoaded', () => {
             questionEl.innerHTML = "Error: Could not load 'flashcard_data.json'.";
         });
 
-    // --- FILTERING LOGIC ---
+    // --- NEW: FILTERING LOGIC ---
     function populateFilters() {
+        // Get unique, sorted lists of chapters and marks
         const chapters = [...new Set(allFlashcards.map(c => c.chapter))].sort();
         const marks = [...new Set(allFlashcards.map(c => c.marks))].sort((a, b) => a - b);
 
@@ -65,21 +67,27 @@ document.addEventListener('DOMContentLoaded', () => {
     function applyFilters() {
         const selectedChapter = chapterFilter.value;
         const selectedMarks = marksFilter.value;
-        let tempDeck = [...allFlashcards];
 
+        let tempDeck = [...allFlashcards]; // Start with the full deck
+
+        // Filter by chapter if a specific chapter is selected
         if (selectedChapter !== 'all') {
             tempDeck = tempDeck.filter(card => card.chapter === selectedChapter);
         }
+
+        // Filter by marks if a specific mark is selected
         if (selectedMarks !== 'all') {
+            // Use parseInt because the value from the select is a string
             tempDeck = tempDeck.filter(card => card.marks === parseInt(selectedMarks, 10));
         }
 
         filteredDeck = tempDeck;
-        currentIndex = 0;
-        displayCard();
+        currentIndex = 0; // Reset index to the start of the new filtered deck
+        displayCard(); // Update the view with the new deck
     }
+    // --- END NEW ---
 
-    // --- CORE FUNCTIONS ---
+    // --- CORE FUNCTIONS (Updated to use filteredDeck) ---
     function displayCard() {
         if (filteredDeck.length === 0) {
             questionEl.innerHTML = "<h2>No cards match your filter.</h2>";
@@ -88,51 +96,34 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // --- 1. FIX: INSTANT RESET (Prevent "Quick Flip" Glitch) ---
-        // Instantly snap card to front without animation before changing content
-        card.style.transition = 'none';
-        card.classList.remove('is-flipped');
-
-        // Force browser to accept the change immediately
-        void card.offsetWidth;
-
-        // Restore animation so the user can flip it manually later
-        setTimeout(() => {
-            card.style.transition = '';
-        }, 50);
-
-        // --- 2. RENDER CONTENT ---
         const currentCard = filteredDeck[currentIndex];
         questionEl.innerHTML = `<strong>Q:</strong> ${currentCard.question} (${currentCard.marks}m)`;
 
         let answerHTML = `<strong>A:</strong> ${marked.parse(currentCard.note || "")}`;
 
-        // --- 3. COMPATIBILITY & LANGUAGE LOGIC ---
         if (currentCard.code && currentCard.code.trim() !== "") {
             const escapedCode = currentCard.code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-            // Logic: If 'language' exists in JSON, use it. If not, default to 'python'.
-            const langClass = currentCard.language || 'python';
-
-            answerHTML += `<h3>Code:</h3><pre><code class="language-${langClass}">${escapedCode}</code></pre>`;
+            answerHTML += `<h3>Code:</h3><pre><code class="python">${escapedCode}</code></pre>`;
         }
 
+        // Logic for a single image string
         if (currentCard.image && typeof currentCard.image === 'string' && currentCard.image.trim() !== "") {
             answerHTML += `<h3>Output:</h3><img src="images/${currentCard.image}" alt="Output Image">`;
         }
 
         answerEl.innerHTML = answerHTML;
 
-        // Apply Syntax Highlighting to the new content
         try { hljs.highlightAll(); } catch (e) { }
 
         progressText.textContent = `Card ${currentIndex + 1} of ${filteredDeck.length}`;
+        card.classList.remove('is-flipped');
     }
 
     function flipCard() {
         card.classList.toggle('is-flipped');
     }
 
+    // --- NAVIGATION LOGIC (Updated to use filteredDeck) ---
     function nextCard() {
         if (filteredDeck.length === 0) return;
         currentIndex = (currentIndex + 1) % filteredDeck.length;
@@ -147,19 +138,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- EVENT LISTENERS ---
     flipButton.addEventListener('click', flipCard);
-
-    // Clicking card flips it, unless selecting text in code block
-    card.addEventListener('click', (e) => {
-        if (e.target.closest('pre') || e.target.closest('code')) return;
-        flipCard();
-    });
-
+    card.addEventListener('click', flipCard);
     nextButton.addEventListener('click', nextCard);
     prevButton.addEventListener('click', prevCard);
 
     mobilePrevButton.addEventListener('click', (e) => { e.stopPropagation(); prevCard(); });
     mobileNextButton.addEventListener('click', (e) => { e.stopPropagation(); nextCard(); });
 
+    // --- NEW: Listen for changes on the filter dropdowns ---
     chapterFilter.addEventListener('change', applyFilters);
     marksFilter.addEventListener('change', applyFilters);
     filterToggle.addEventListener('click', () => {
