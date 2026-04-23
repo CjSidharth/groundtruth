@@ -481,7 +481,7 @@ elif st.session_state.view == 'detail':
          st.session_state.progress['notes'][note_key] = new_note
 
     st.divider()
-    st.subheader("🐍 Python Code (Optional)")
+    st.subheader("🐘 PHP Code (Optional)")
     current_code = st.session_state.progress.get("code", {}).get(note_key, "")
     new_code = st.text_area("Code:", value=current_code, height=250, label_visibility="collapsed", key=f"code_{note_key}")
 

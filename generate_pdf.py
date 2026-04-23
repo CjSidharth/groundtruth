@@ -214,7 +214,7 @@ def create_pdf_direct(subject, chapter):
             html_parts.append("<div class='section-title'>Code:</div>")
             code_text = card_data['code'].replace('\u200b', '')
             try:
-                lexer = get_lexer_by_name("python")
+                lexer = get_lexer_by_name("php")
             except ClassNotFound:
                 lexer = TextLexer()
             highlighted_code = highlight(code_text, lexer, html_formatter)

@@ -103,7 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (currentCard.code && currentCard.code.trim() !== "") {
             const escapedCode = currentCard.code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            answerHTML += `<h3>Code:</h3><pre><code class="python">${escapedCode}</code></pre>`;
+            answerHTML += `<h3>Code:</h3><pre><code class="php">${escapedCode}</code></pre>`;
         }
 
         // Logic for a single image string
