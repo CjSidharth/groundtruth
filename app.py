@@ -11,6 +11,7 @@ import ollama
 import pdfplumber
 import pyttsx3
 import time
+import hashlib
 from google import genai
 
 
@@ -81,11 +82,29 @@ def load_data(subject):
         return pd.DataFrame()
     master_df = pd.concat(all_questions, ignore_index=True)
     master_df.columns = master_df.columns.str.strip()
+
+    # 🔴 BULLETPROOF NaN FIX: Annihilate all forms of empty/null values in Streamlit
+    for col in ['Category', 'Marks']:
+        if col in master_df.columns:
+            # 1. Convert everything to a string
+            master_df[col] = master_df[col].astype(str).str.strip()
+            
+            # 2. Replace the literal string 'nan', 'NaN', and empty spaces with 'N/A'
+            master_df[col] = master_df[col].replace(
+                ['nan', 'NaN', 'None', '', '<NA>', 'null', 'NULL'], 'N/A'
+            )
+            
+            # 3. Clean up the trailing decimals pandas adds to numbers
+            if col == 'Marks':
+                master_df[col] = master_df[col].replace(r'\.0$', '', regex=True)
+
+    def make_hash(text):
+        return hashlib.md5(str(text).encode()).hexdigest()[:8]
+
+    master_df['StableID'] = master_df['Chapter'].astype(str) + '_' + master_df['Question'].apply(make_hash)
     
-    sr_no_col = master_df.get('Sr. No.', pd.Series(master_df.index, name='Sr. No.')).astype(str)
-    master_df['StableID'] = master_df['Chapter'].astype(str) + '_' + \
-                             sr_no_col + '_' + \
-                             master_df['Question'].str.slice(0, 30).str.replace(r'\W+', '', regex=True)
+    # Filter out truly blank rows just in case
+    master_df = master_df[master_df['Question'].str.strip() != ""]
     return master_df
 
 # --- HELPER: Universal AI Caller (Safe Mode & Stable Model) ---
@@ -272,13 +291,26 @@ with st.sidebar:
     chapters = sorted(master_df['Chapter'].unique())
     selected_chapters = st.multiselect("Chapter(s):", chapters, default=chapters)
     
+    # 🔴 BULLETPROOF FIX: A helper function that forces everything to be a clean Python string
+    def clean_ui_value(val):
+        val_str = str(val).strip()
+        if val_str.endswith('.0'): 
+            return val_str[:-2]  # Turns "3.0" into "3"
+        if val_str.lower() in ['nan', 'none', '']:
+            return 'N/A'
+        return val_str
+
     if 'Category' in master_df.columns:
-        selected_category = st.multiselect("Category:", master_df['Category'].unique(), default=master_df['Category'].unique())
+        # Converts all unique values to strings, removes duplicates, and sorts them safely
+        unique_categories = sorted(list(set(clean_ui_value(x) for x in master_df['Category'].unique())))
+        selected_category = st.multiselect("Category:", unique_categories, default=unique_categories)
     else:
         selected_category = master_df.index
     
     if 'Marks' in master_df.columns:
-        selected_marks = st.multiselect("Marks:", sorted(master_df['Marks'].unique()), default=sorted(master_df['Marks'].unique()))
+        # Same process for Marks
+        unique_marks = sorted(list(set(clean_ui_value(x) for x in master_df['Marks'].unique())))
+        selected_marks = st.multiselect("Marks:", unique_marks, default=unique_marks)
     else:
         selected_marks = master_df.index
 
@@ -295,10 +327,16 @@ if search_query:
 
 # --- Filtering Logic ---
 filtered_df = master_df.copy()
+
+# 🔴 BULLETPROOF FIX: We apply the same string cleaning to the DataFrame before filtering
 if 'Category' in filtered_df.columns:
-    filtered_df = filtered_df[filtered_df['Category'].isin(selected_category)]
+    safe_cats = filtered_df['Category'].apply(clean_ui_value)
+    filtered_df = filtered_df[safe_cats.isin(selected_category)]
+    
 if 'Marks' in filtered_df.columns:
-    filtered_df = filtered_df[filtered_df['Marks'].isin(selected_marks)]
+    safe_marks = filtered_df['Marks'].apply(clean_ui_value)
+    filtered_df = filtered_df[safe_marks.isin(selected_marks)]
+    
 filtered_df = filtered_df[filtered_df['Chapter'].isin(selected_chapters)]
 
 done_qids = set(st.session_state.progress['done_questions'])
@@ -347,10 +385,36 @@ elif st.session_state.view == 'detail':
     question = filtered_df.iloc[q_index]
     note_key = question['StableID']
     text_area_key = f"note_{note_key}"
+
+    # 🔴 CRITICAL FIX: Callback to guarantee saves before UI changes
+    def auto_save_text(widget_key, dict_name):
+        st.session_state.progress[dict_name][note_key] = st.session_state[widget_key]
+        save_progress(st.session_state.current_subject, st.session_state.progress)
+
+    def save_all_changes():
+        # 1. Grab text directly from session state to avoid NameErrors
+        latest_note = st.session_state.get(text_area_key, "")
+        latest_code = st.session_state.get(f"code_{note_key}", "")
+        
+        # 2. Save Notes
+        st.session_state.progress['notes'][note_key] = latest_note
+        
+        # 3. Save Code
+        st.session_state.progress.setdefault("code", {})
+        st.session_state.progress['code'][note_key] = latest_code
+        
+        # (Images are already auto-saved when uploaded, so we don't need them here!)
+
+        # 4. Write to disk
+        save_progress(selected_subject, st.session_state.progress)
+        st.toast("Saved!", icon="✅")
     
     # Navigation
     nav_cols = st.columns([1, 5, 1])
-    if nav_cols[0].button("⬅️ Back"): st.session_state.view = 'list'; st.rerun()
+    if nav_cols[0].button("⬅️ Back"):
+        save_all_changes()   # <-- Much cleaner and saves EVERYTHING
+        st.session_state.view = 'list'
+        st.rerun()
     nav_cols[2].write(f"Q {q_index + 1}")
     
     st.subheader(f"Q: {question['Question']}")
@@ -459,6 +523,7 @@ elif st.session_state.view == 'detail':
             # Save & Cleanup
             st.session_state.progress['notes'][note_key] = updated_note
             st.session_state[text_area_key] = updated_note
+            save_progress(selected_subject, st.session_state.progress) 
             st.session_state.temp_voice_data = None
             st.session_state.audio_key_counter += 1
             st.toast("Notes Appended!", icon="✅")
@@ -475,37 +540,60 @@ elif st.session_state.view == 'detail':
 
     # Notes Input
     current_note_value = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
-    new_note = st.text_area("Notes:", value=current_note_value, height=550, label_visibility="collapsed", placeholder="Add keywords...", key=text_area_key)
-
-    if new_note != st.session_state.progress['notes'].get(note_key, ""):
-         st.session_state.progress['notes'][note_key] = new_note
+    
+    new_note = st.text_area(
+        "Notes:", 
+        value=current_note_value, 
+        height=550, 
+        label_visibility="collapsed", 
+        placeholder="Add keywords...", 
+        key=text_area_key,
+        on_change=auto_save_text,             # <-- Added callback
+        args=(text_area_key, "notes")         # <-- Passed arguments
+    )
 
     st.divider()
-    st.subheader("🐘 PHP Code (Optional)")
-    current_code = st.session_state.progress.get("code", {}).get(note_key, "")
-    new_code = st.text_area("Code:", value=current_code, height=250, label_visibility="collapsed", key=f"code_{note_key}")
+    st.subheader("🐍 Python Code (Optional)")
+    st.session_state.progress.setdefault("code", {})
+    current_code = st.session_state.progress["code"].get(note_key, "")
+    
+    code_area_key = f"code_{note_key}"
+    new_code = st.text_area(
+        "Code:", 
+        value=current_code, 
+        height=250, 
+        label_visibility="collapsed", 
+        key=code_area_key,
+        on_change=auto_save_text,             # <-- Added callback
+        args=(code_area_key, "code")          # <-- Passed arguments
+    )
+
 
     st.subheader("🖼️ Image (Optional)")
-    current_image = st.session_state.progress.get("images", {}).get(note_key, "")
+    st.session_state.progress.setdefault("images", {})
+    current_image = st.session_state.progress["images"].get(note_key, "")
     if current_image:
         image_path = os.path.join(DATA_DIR, selected_subject, "images", current_image)
         if os.path.exists(image_path): st.image(image_path, width=400)
     uploaded_file = st.file_uploader("Upload an image:", type=["png", "jpg", "jpeg"], key=f"upload_{note_key}")
 
-    def save_all_changes():
-        st.session_state.progress['notes'][note_key] = new_note
-        if new_code != current_code:
-            if 'code' not in st.session_state.progress: st.session_state.progress['code'] = {}
-            st.session_state.progress['code'][note_key] = new_code
-        if uploaded_file is not None:
+    # 🔴 CRITICAL FIX: Prevent infinite rerun loop
+    if uploaded_file is not None:
+        safe_name = f"{note_key}_{uploaded_file.name}" 
+        
+        if safe_name != current_image:
             image_dir = os.path.join(DATA_DIR, selected_subject, "images")
-            if not os.path.exists(image_dir): os.makedirs(image_dir)
-            with open(os.path.join(image_dir, uploaded_file.name), "wb") as f:
+            os.makedirs(image_dir, exist_ok=True)
+            
+            with open(os.path.join(image_dir, safe_name), "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            if 'images' not in st.session_state.progress: st.session_state.progress['images'] = {}
-            st.session_state.progress['images'][note_key] = uploaded_file.name
-        save_progress(selected_subject, st.session_state.progress)
-        st.toast("Saved!", icon="✅")
+                
+            st.session_state.progress["images"][note_key] = safe_name
+            save_progress(selected_subject, st.session_state.progress)
+            st.toast("Image saved!", icon="✅")
+            st.rerun()
+
+    
 
     st.divider()
     # 1. Save Button (Extra convenience)
