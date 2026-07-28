@@ -221,7 +221,10 @@ def create_pdf_direct(subject, chapter):
             html_parts.append(highlighted_code)
 
         # --- FIX 2: Refactored image handling logic ---
-        image_list = card_data.get('image', [])
+        # 'images' is the current field name (create_flashcards.py exports a list under this
+        # key); fall back to the older singular 'image' key for any flashcard_data.json that
+        # hasn't been regenerated since the multi-image change.
+        image_list = card_data.get('images', card_data.get('image', []))
         if isinstance(image_list, str):
             image_list = [image_list]
         

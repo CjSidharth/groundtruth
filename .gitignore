@@ -3,3 +3,5 @@ venv/
 qb_deploy/
 .streamlit/
 .vscode/
+data/*/reference/.cache/
+__pycache__/

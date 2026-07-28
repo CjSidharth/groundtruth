@@ -12,7 +12,10 @@ import pdfplumber
 import pyttsx3
 import time
 import hashlib
+from datetime import date, timedelta
 from google import genai
+from reference_material import get_relevant_reference, format_sources, build_gap_check_prompt, build_reveal_answer_prompt, build_voice_feedback_prompt, TEXT_MODEL
+import spaced_repetition as srs
 
 
 # --- Page Configuration ---
@@ -41,6 +44,11 @@ except Exception as e:
     st.stop()
 
 # --- Helper Functions ---
+def defang_headings(text):
+    """Demote markdown heading lines ('# Foo') to bold text so a note that happens to use
+    headings doesn't render as a giant page-sized H1 in the compact flashcard/notes preview."""
+    return re.sub(r'^#{1,6}\s*(.+)$', r'**\1**', text, flags=re.MULTILINE)
+
 def get_subjects():
     if not os.path.exists(DATA_DIR): return []
     return sorted([d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d))])
@@ -60,6 +68,45 @@ def load_progress(subject):
 def save_progress(subject, progress):
     filepath = get_progress_filepath(subject)
     with open(filepath, 'w') as f: json.dump(progress, f, indent=4)
+
+def get_srs_entry(progress, qid):
+    """The scheduling entry for a question, or a fresh one (due immediately) if never graded."""
+    return progress.setdefault('srs', {}).get(qid, srs.new_entry())
+
+def grade_srs(progress, qid, rating):
+    """Grade a review (Again/Hard/Good/Easy) and store the resulting schedule in-place."""
+    progress['srs'][qid] = srs.grade(get_srs_entry(progress, qid), rating)
+
+def get_note_images(progress, note_key):
+    """Images for a question, tolerating the old single-filename-string format."""
+    val = progress.get("images", {}).get(note_key)
+    if not val:
+        return []
+    return [val] if isinstance(val, str) else list(val)
+
+STREAK_PATH = os.path.join(PROGRESS_DIR, "_streak.json")
+
+def load_streak():
+    if os.path.exists(STREAK_PATH):
+        with open(STREAK_PATH, 'r') as f:
+            try: return json.load(f)
+            except json.JSONDecodeError: pass
+    return {"last_review_date": None, "current_streak": 0, "longest_streak": 0}
+
+def save_streak(streak):
+    with open(STREAK_PATH, 'w') as f: json.dump(streak, f, indent=4)
+
+def record_review_today(streak):
+    """Advance the streak for a review happening right now. Any single rating counts - no
+    minimum review count, so the daily bar stays low enough to never be its own excuse to skip."""
+    today = date.today().isoformat()
+    if streak["last_review_date"] == today:
+        return streak
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    streak["current_streak"] = streak["current_streak"] + 1 if streak["last_review_date"] == yesterday else 1
+    streak["last_review_date"] = today
+    streak["longest_streak"] = max(streak["longest_streak"], streak["current_streak"])
+    return streak
 
 @st.cache_data
 def load_data(subject):
@@ -150,14 +197,23 @@ def ask_ai(prompt, provider, api_key=None, model_name="llama3.2:3b", stream=True
 
     else: # Local Ollama
         try:
-            local_model = "llama3.2:1b" if "1b" in model_name else "llama3.2:3b"
+            # Ollama defaults num_ctx to 4096 regardless of what the model actually supports,
+            # and silently truncates from the START of the prompt when it's exceeded - which
+            # means the Reference Material (placed before the student's note in the grounded
+            # prompts) is the first thing dropped for a long note, with no error at all.
             if stream:
-                for chunk in ollama.generate(model=local_model, prompt=prompt, stream=True):
+                for chunk in ollama.generate(model=model_name, prompt=prompt, stream=True, options={"num_ctx": 8192}):
                     yield chunk['response']
             else:
-                yield ollama.generate(model=local_model, prompt=prompt)['response']
+                yield ollama.generate(model=model_name, prompt=prompt, options={"num_ctx": 8192})['response']
         except Exception as e:
             yield f"[Ollama Error] {e}. Is Ollama running?"
+
+def is_ai_error(text):
+    """True if ask_ai() yielded one of its own error strings (e.g. "[Ollama Error] ...")
+    rather than real model output - ask_ai() never raises, so callers must check this
+    themselves before treating a response as genuine feedback worth saving."""
+    return bool(re.match(r'^\[[A-Za-z ]+\]', text or ""))
 
 
 # --- HELPER: Dynamic Text Cleaner ---
@@ -246,7 +302,6 @@ if 'current_subject' not in st.session_state or st.session_state.current_subject
     st.session_state.view = 'list'
     st.session_state.current_question_index = None
     st.session_state.page_number = 0
-    st.session_state.flashcard_index = 0
     st.session_state.card_flipped = False
     st.session_state.audio_key_counter = 0 
 
@@ -262,9 +317,12 @@ with st.sidebar:
     if view_cols[0].button("📚 Question List", use_container_width=True, type="secondary" if is_flashcard_mode else "primary"):
         st.session_state.view = 'list'; st.rerun()
     if view_cols[1].button("🗂️ Flashcards", use_container_width=True, type="primary" if is_flashcard_mode else "secondary"):
-        st.session_state.view = 'flashcard'; st.session_state.flashcard_index = 0; st.session_state.card_flipped = False; st.rerun()
+        st.session_state.view = 'flashcard'; st.session_state.card_flipped = False; st.rerun()
     if st.button("📖 Smart PDF Reader", use_container_width=True):
         st.session_state.view = 'pdf_reader'
+        st.rerun()
+    if st.button("📊 Dashboard", use_container_width=True):
+        st.session_state.view = 'dashboard'
         st.rerun()
     # In your Sidebar section:
     st.divider()
@@ -317,6 +375,15 @@ with st.sidebar:
     review_status = st.radio("Status:", ('All', 'Reviewed', 'Not Reviewed'), horizontal=True)
     st.divider()
     search_query = st.text_input("🔍 Search Questions & Notes")
+    st.divider()
+    with st.expander("🧪 Testing utilities"):
+        st.caption("Resets spaced-repetition scheduling for this subject so every noted question is due again. Does NOT touch your notes/code/images.")
+        if st.checkbox("I understand, reset SRS progress", key="confirm_srs_reset"):
+            if st.button("🗑️ Reset SRS Progress", use_container_width=True):
+                st.session_state.progress['srs'] = {}
+                save_progress(selected_subject, st.session_state.progress)
+                st.toast("SRS progress reset - everything is due again.", icon="✅")
+                st.rerun()
 
 if search_query:
     question_mask = master_df['Question'].str.contains(search_query, case=False, na=False)
@@ -346,45 +413,79 @@ filtered_df.reset_index(drop=True, inplace=True)
 
 # --- View Switching ---
 if st.session_state.view == 'flashcard':
-    st.header("🗂️ Flashcard Review Session")
-    
-    noted_qids = set(st.session_state.progress['notes'].keys())
-    flashcard_deck = filtered_df[filtered_df['StableID'].isin(noted_qids)].reset_index(drop=True)
-    
-    if flashcard_deck.empty:
+    st.header("🗂️ Spaced Repetition Review")
+
+    noted_qids = {qid for qid, note in st.session_state.progress['notes'].items() if note and note.strip()}
+    candidate_deck = filtered_df[filtered_df['StableID'].isin(noted_qids)].reset_index(drop=True)
+
+    st.session_state.progress.setdefault('srs', {})
+    srs_data = st.session_state.progress['srs']
+
+    if candidate_deck.empty:
         st.warning("No notes found for questions matching filters. Add notes in the 'Question List' view.")
     else:
-        deck_size = len(flashcard_deck)
-        if st.session_state.flashcard_index >= deck_size: st.session_state.flashcard_index = 0
-        question = flashcard_deck.iloc[st.session_state.flashcard_index]
-        with st.container(height=500, border=True):
-            st.subheader(f"Q: {question['Question']}")
-            st.caption(f"Chapter: {question['Chapter']} | Marks: {question.get('Marks', 'N/A')}")
-            if not st.session_state.card_flipped:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("Show My Notes (Flip Card)", type="primary"): st.session_state.card_flipped = True; st.rerun()
-            if st.session_state.card_flipped:
-                st.markdown("---"); st.subheader("Your Notes:")
-                note = st.session_state.progress['notes'].get(question['StableID'], "*No notes.*")
-                note_with_breaks = note.replace('\n', '<br>')
-                st.markdown(note_with_breaks, unsafe_allow_html=True)
-        st.subheader(f"Card {st.session_state.flashcard_index + 1} of {deck_size}")
-        nav_cols = st.columns(2)
-        if nav_cols[0].button("◀ Prev", use_container_width=True, disabled=(st.session_state.flashcard_index == 0)):
-            st.session_state.flashcard_index -= 1; st.session_state.card_flipped = False; st.rerun()
-        if st.session_state.flashcard_index < deck_size - 1:
-            if nav_cols[1].button("Next ▶", use_container_width=True):
-                st.session_state.flashcard_index += 1; st.session_state.card_flipped = False; st.rerun()
+        due_mask = candidate_deck['StableID'].apply(lambda qid: srs.is_due(get_srs_entry(st.session_state.progress, qid)))
+        due_deck = candidate_deck[due_mask].copy()
+
+        if due_deck.empty:
+            upcoming = [srs_data[qid]['due'] for qid in candidate_deck['StableID'] if qid in srs_data]
+            next_due = min(upcoming) if upcoming else None
+            msg = f"🎉 Nothing due right now out of {len(candidate_deck)} notes in scope."
+            if next_due:
+                msg += f" Next review unlocks {next_due}."
+            st.success(msg)
         else:
-            if nav_cols[1].button("Restart 🔄", use_container_width=True, type="primary"):
-                st.session_state.flashcard_index = 0; st.session_state.card_flipped = False; st.rerun()
+            due_deck['_due'] = due_deck['StableID'].apply(lambda qid: get_srs_entry(st.session_state.progress, qid)['due'])
+            due_deck = due_deck.sort_values('_due').reset_index(drop=True)
+            question = due_deck.iloc[0]
+            note_key = question['StableID']
+
+            st.caption(f"📅 {len(due_deck)} due now  •  {len(candidate_deck)} total notes in this filter")
+
+            with st.container(height=500, border=True):
+                st.subheader(f"Q: {question['Question']}")
+                st.caption(f"Chapter: {question['Chapter']} | Marks: {question.get('Marks', 'N/A')}")
+                if not st.session_state.card_flipped:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("Show My Notes (Flip Card)", type="primary", use_container_width=True):
+                        st.session_state.card_flipped = True; st.rerun()
+                else:
+                    st.markdown("---"); st.subheader("Your Notes:")
+                    note = st.session_state.progress['notes'].get(note_key, "*No notes.*")
+                    # No newline->br conversion: that broke Markdown tables (they need real \n's
+                    # between rows to be recognized at all). Streamlit's renderer supports GFM
+                    # tables natively - just pass the text through.
+                    st.markdown(defang_headings(note), unsafe_allow_html=True)
+                    for img_name in get_note_images(st.session_state.progress, note_key):
+                        image_path = os.path.join(DATA_DIR, selected_subject, "images", img_name)
+                        if os.path.exists(image_path):
+                            st.image(image_path, width=300)
+
+            if st.session_state.card_flipped:
+                st.caption("How well did you know this?")
+                rate_cols = st.columns(4)
+                for col, (emoji_label, rating) in zip(
+                    rate_cols, [("😵 Again", "Again"), ("😬 Hard", "Hard"), ("🙂 Good", "Good"), ("😎 Easy", "Easy")]
+                ):
+                    if col.button(emoji_label, use_container_width=True, key=f"rate_{rating}_{note_key}"):
+                        grade_srs(st.session_state.progress, note_key, rating)
+                        save_progress(selected_subject, st.session_state.progress)
+                        save_streak(record_review_today(load_streak()))
+                        st.session_state.card_flipped = False
+                        st.rerun()
 
 elif st.session_state.view == 'detail':
     q_index = st.session_state.current_question_index
     if q_index is None: st.session_state.view = 'list'; st.rerun()
     question = filtered_df.iloc[q_index]
     note_key = question['StableID']
-    text_area_key = f"note_{note_key}"
+    # Versioned key (same trick as audio_key_counter below): Streamlit's text_area can keep
+    # showing its old on-screen text even after the underlying session_state value is cleared/
+    # updated server-side - popping/reassigning the SAME key isn't a reliable visual refresh.
+    # Changing the key itself forces a real remount, which does reliably refresh what's shown.
+    notes_version_key = f"notes_version_{note_key}"
+    st.session_state.setdefault(notes_version_key, 0)
+    text_area_key = f"note_{note_key}_v{st.session_state[notes_version_key]}"
 
     # 🔴 CRITICAL FIX: Callback to guarantee saves before UI changes
     def auto_save_text(widget_key, dict_name):
@@ -393,8 +494,11 @@ elif st.session_state.view == 'detail':
 
     def save_all_changes():
         # 1. Grab text directly from session state to avoid NameErrors
-        latest_note = st.session_state.get(text_area_key, "")
-        latest_code = st.session_state.get(f"code_{note_key}", "")
+        # Falls back to the already-saved value, not "" - the text_area's widget key can be
+        # momentarily absent from session_state (e.g. right after a programmatic pop() used to
+        # force-refresh the widget), and defaulting to "" here would silently wipe a real note.
+        latest_note = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
+        latest_code = st.session_state.get(f"code_{note_key}", st.session_state.progress.get('code', {}).get(note_key, ""))
         
         # 2. Save Notes
         st.session_state.progress['notes'][note_key] = latest_note
@@ -444,8 +548,12 @@ elif st.session_state.view == 'detail':
             st.write("") 
             # Only show local model choice if using Ollama
             if ai_provider == "Local (Ollama)":
-                model_choice = st.selectbox("Model", ["3b", "1b"], label_visibility="collapsed")
-                selected_model = "llama3.2:3b" if "3b" in model_choice else "llama3.2:1b"
+                # Default to the best model here (first in the list): this is a review step
+                # after you've already recorded and waited for transcription, not a fast loop -
+                # quality matters more than shaving a few seconds, same reasoning as gap-check.
+                model_options = {f"{TEXT_MODEL} (best)": TEXT_MODEL, "3b (fast)": "llama3.2:3b", "1b (fastest)": "llama3.2:1b"}
+                model_choice = st.selectbox("Model", list(model_options.keys()), label_visibility="collapsed")
+                selected_model = model_options[model_choice]
             else:
                 st.caption("Using Gemini")
                 selected_model = "gemini"
@@ -453,77 +561,121 @@ elif st.session_state.view == 'detail':
         if audio_val:
             st.info("Audio captured.")
             b1, b2 = st.columns(2)
-            
-            if b1.button("⚡ Transcribe & Analyze", type="primary", use_container_width=True):
-                with st.spinner("Processing..."):
-                    # 1. Whisper Transcribe (Always Local)
-                    audio_bytes = audio_val.read()
-                    audio_buffer = io.BytesIO(audio_bytes)
-                    segments, info = whisper_model.transcribe(audio_buffer, beam_size=1)
-                    raw_text = " ".join([segment.text for segment in segments]).strip()
 
-                if raw_text:
-                    ai_response = ""
-                    # 2. AI Analysis (Uses Universal Helper)
+            if b1.button("⚡ Transcribe & Analyze", type="primary", use_container_width=True):
+                raw_text = None
+                with st.spinner("Transcribing..."):
+                    try:
+                        # Whisper Transcribe (Always Local)
+                        audio_bytes = audio_val.read()
+                        audio_buffer = io.BytesIO(audio_bytes)
+                        segments, info = whisper_model.transcribe(audio_buffer, beam_size=1)
+                        raw_text = " ".join([segment.text for segment in segments]).strip()
+                    except Exception as e:
+                        st.error(f"Transcription failed: {e}")
+
+                if raw_text is not None and not raw_text:
+                    st.warning("No speech detected - try recording again.")
+                elif raw_text:
+                    ai_response, ai_failed, sources = "", False, []
                     if use_ai:
-                        prompt = f"""
-                        You are a Viva Tutor.
-                        Question: "{question['Question']}"
-                        Student Answer: "{raw_text}"
-                        
-                        1. Clean up the transcript.
-                        2. Give specific feedback on missing points.
-                        """
-                        
+                        # Ground feedback in the chapter's reference material when available,
+                        # same as the "Check Against Reference" gap-check feature - falls back
+                        # to a generic ungrounded prompt for chapters with no reference PDF yet.
+                        ref_text = None
+                        try:
+                            ref_text, sources = get_relevant_reference(selected_subject, question['Chapter'], question['Question'], gemini_key)
+                        except Exception:
+                            ref_text, sources = None, []
+
+                        if ref_text and ref_text.strip():
+                            prompt = build_voice_feedback_prompt(question['Question'], raw_text, ref_text)
+                        else:
+                            sources = []
+                            prompt = f"""
+                            You are a Viva Tutor.
+                            Question: "{question['Question']}"
+                            Student Answer: "{raw_text}"
+
+                            1. Clean up the transcript.
+                            2. Give specific feedback on missing points.
+                            """
+
                         stream_box = st.empty()
                         full_streamed_text = ""
-                        
-                        # --- CALL THE HELPER ---
                         for chunk in ask_ai(prompt, ai_provider, gemini_key, selected_model):
                             full_streamed_text += chunk
                             stream_box.markdown(full_streamed_text + "▌")
-                        
+
                         ai_response = full_streamed_text
+                        ai_failed = is_ai_error(ai_response)
                         stream_box.empty()
-                    
+
                     st.session_state.temp_voice_data = {
                         "raw": raw_text,
-                        "ai": ai_response
+                        "ai": ai_response,
+                        "ai_failed": ai_failed,
+                        "sources": sources,
                     }
                     st.rerun()
-            
+
             if b2.button("🔄 Reset", type="secondary", use_container_width=True):
                 st.session_state.audio_key_counter += 1
                 st.rerun()
-                
+
     # --- PREVIEW / CONFIRMATION AREA ---
     if st.session_state.temp_voice_data:
+        voice_data = st.session_state.temp_voice_data
         st.success("✅ Transcription Complete! Review before adding.")
-        
-        # Display the AI Generated Content
-        if st.session_state.temp_voice_data["ai"]:
-            st.markdown(st.session_state.temp_voice_data["ai"])
+
+        if voice_data["ai_failed"]:
+            st.error(voice_data["ai"])
+            st.caption(f"Transcript: {voice_data['raw']}")
+        elif voice_data["ai"]:
+            st.markdown(voice_data["ai"])
         else:
-            st.markdown(f"**Transcript:** {st.session_state.temp_voice_data['raw']}")
+            st.markdown(f"**Transcript:** {voice_data['raw']}")
 
-        # Action Buttons
-        btn_col1, btn_col2 = st.columns(2)
-        
-        if btn_col1.button("⬇️ Add to Notes", type="primary", use_container_width=True):
-            current_text = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
-            
-            # Format how it looks in the text box
-            if st.session_state.temp_voice_data['ai']:
-                new_entry = f"\n{st.session_state.temp_voice_data['ai']}\n"
+        if voice_data.get("sources"):
+            st.caption(f"📄 Sources: {format_sources(voice_data['sources'])}")
+
+        def _voice_addition():
+            # Never save a failed-AI-call error string into notes as if it were feedback -
+            # fall back to the raw transcript in that case, same as when AI wasn't used at all.
+            if voice_data["ai"] and not voice_data["ai_failed"]:
+                addition = f"\n{voice_data['ai']}\n"
             else:
-                new_entry = f"\n- {st.session_state.temp_voice_data['raw']}\n"
+                addition = f"\n- {voice_data['raw']}\n"
+            if voice_data.get("sources"):
+                addition += f"\n*Source: {format_sources(voice_data['sources'])}*\n"
+            return addition
 
-            updated_note = (current_text + "\n" + new_entry) if current_text else new_entry
-            
-            # Save & Cleanup
+        def _save_voice_note():
+            current_text = st.session_state.get(text_area_key, st.session_state.progress['notes'].get(note_key, ""))
+            addition = _voice_addition()
+            updated_note = (current_text + "\n" + addition) if current_text else addition
             st.session_state.progress['notes'][note_key] = updated_note
-            st.session_state[text_area_key] = updated_note
-            save_progress(selected_subject, st.session_state.progress) 
+            st.session_state[notes_version_key] += 1
+            save_progress(selected_subject, st.session_state.progress)
+
+        st.caption("How well did you know this?")
+        rate_cols = st.columns(4)
+        for col, (emoji_label, rating) in zip(
+            rate_cols, [("😵 Again", "Again"), ("😬 Hard", "Hard"), ("🙂 Good", "Good"), ("😎 Easy", "Easy")]
+        ):
+            if col.button(emoji_label, use_container_width=True, key=f"voice_rate_{rating}_{note_key}"):
+                _save_voice_note()
+                grade_srs(st.session_state.progress, note_key, rating)
+                save_progress(selected_subject, st.session_state.progress)
+                save_streak(record_review_today(load_streak()))
+                st.session_state.temp_voice_data = None
+                st.session_state.audio_key_counter += 1
+                st.toast(f"Saved and rated {rating}!", icon="✅")
+                st.rerun()
+
+        btn_col1, btn_col2 = st.columns(2)
+        if btn_col1.button("⬇️ Add to Notes (no rating)", use_container_width=True):
+            _save_voice_note()
             st.session_state.temp_voice_data = None
             st.session_state.audio_key_counter += 1
             st.toast("Notes Appended!", icon="✅")
@@ -531,9 +683,7 @@ elif st.session_state.view == 'detail':
 
         if btn_col2.button("❌ Discard Results", type="secondary", use_container_width=True):
             st.session_state.temp_voice_data = None
-            # We don't increment counter here so they can see the old audio, 
-            # but usually you want to reset to record again:
-            st.session_state.audio_key_counter += 1 
+            st.session_state.audio_key_counter += 1
             st.toast("Discarded", icon="🗑️")
             st.rerun()
     # --- END VOICE ---
@@ -552,6 +702,111 @@ elif st.session_state.view == 'detail':
         args=(text_area_key, "notes")         # <-- Passed arguments
     )
 
+    # --- REFERENCE GAP-CHECK ---
+    # Default to Ollama here regardless of the sidebar's ai_provider toggle: this can run
+    # over hundreds of questions, so routine checks should be free/local. Gemini is only
+    # ever forced (inside get_relevant_reference) for OCR'ing scanned/handwritten reference pages.
+    st.divider()
+    if 'temp_gap_check' not in st.session_state: st.session_state.temp_gap_check = None
+
+    st.subheader("🔍 Check Against Reference")
+    if not new_note.strip():
+        st.caption("Write an attempt first, then check it against your reference material.")
+    elif not st.session_state.temp_gap_check:
+        if st.button("Check My Answer vs Reference"):
+            with st.spinner("Loading reference & checking..."):
+                try:
+                    ref_text, sources = get_relevant_reference(selected_subject, question['Chapter'], question['Question'], gemini_key)
+                except Exception as e:
+                    ref_text, sources = None, []
+                    st.error(f"Couldn't read reference material: {e}")
+
+            if ref_text is None:
+                st.info(f"No reference material found for this chapter. Add a PDF under "
+                         f"data/{selected_subject}/reference/ to enable this.")
+            elif not ref_text.strip():
+                st.warning("Reference material found but no readable/OCR'd text was extracted.")
+            else:
+                prompt = build_gap_check_prompt(question['Question'], new_note, ref_text)
+                stream_box = st.empty()
+                full_result = ""
+                for chunk in ask_ai(prompt, "Local (Ollama)", gemini_key, TEXT_MODEL):
+                    full_result += chunk
+                    stream_box.markdown(full_result + "▌")
+                stream_box.empty()
+                st.session_state.temp_gap_check = {"result": full_result, "sources": sources}
+                st.rerun()
+    else:
+        st.markdown(st.session_state.temp_gap_check["result"])
+        if st.session_state.temp_gap_check.get("sources"):
+            st.caption(f"📄 Sources: {format_sources(st.session_state.temp_gap_check['sources'])}")
+        gc1, gc2 = st.columns(2)
+        if gc1.button("⬇️ Save to Notes", key="gapcheck_save", use_container_width=True):
+            gap_note = f"\n**Gap-check:**\n{st.session_state.temp_gap_check['result']}\n"
+            if st.session_state.temp_gap_check.get("sources"):
+                gap_note += f"\n*Source: {format_sources(st.session_state.temp_gap_check['sources'])}*\n"
+            updated_note = (new_note + "\n" + gap_note) if new_note else gap_note
+            st.session_state.progress['notes'][note_key] = updated_note
+            st.session_state[notes_version_key] += 1
+            st.session_state.progress.setdefault("reference_checked", {})
+            st.session_state.progress["reference_checked"][note_key] = True
+            save_progress(selected_subject, st.session_state.progress)
+            st.session_state.temp_gap_check = None
+            st.toast("Gap-check saved to notes!", icon="✅")
+            st.rerun()
+        if gc2.button("❌ Dismiss", key="gapcheck_dismiss", use_container_width=True):
+            st.session_state.temp_gap_check = None
+            st.rerun()
+
+    if 'temp_reveal_answer' not in st.session_state: st.session_state.temp_reveal_answer = None
+
+    with st.expander("📖 Reveal Full Reference Answer (use after attempting)"):
+        if not st.session_state.temp_reveal_answer:
+            if st.button("Show Reference Answer", key="reveal_ref_answer"):
+                with st.spinner("Loading reference..."):
+                    try:
+                        ref_text, sources = get_relevant_reference(selected_subject, question['Chapter'], question['Question'], gemini_key)
+                    except Exception as e:
+                        ref_text, sources = None, []
+                        st.error(f"Couldn't read reference material: {e}")
+
+                if ref_text is None:
+                    st.info("No reference material found for this chapter.")
+                elif not ref_text.strip():
+                    st.warning("Reference material found but no readable/OCR'd text was extracted.")
+                else:
+                    prompt = build_reveal_answer_prompt(question['Question'], ref_text)
+                    stream_box = st.empty()
+                    full_result = ""
+                    for chunk in ask_ai(prompt, "Local (Ollama)", gemini_key, TEXT_MODEL):
+                        full_result += chunk
+                        stream_box.markdown(full_result + "▌")
+                    stream_box.empty()
+                    st.session_state.temp_reveal_answer = {"result": full_result, "sources": sources}
+                    st.rerun()
+        else:
+            st.markdown(st.session_state.temp_reveal_answer["result"])
+            if st.session_state.temp_reveal_answer.get("sources"):
+                st.caption(f"📄 Sources: {format_sources(st.session_state.temp_reveal_answer['sources'])}")
+            rv1, rv2 = st.columns(2)
+            if rv1.button("⬇️ Add to Notes", key="reveal_save", use_container_width=True):
+                addition = f"\n**Reference Answer:**\n{st.session_state.temp_reveal_answer['result']}\n"
+                if st.session_state.temp_reveal_answer.get("sources"):
+                    addition += f"\n*Source: {format_sources(st.session_state.temp_reveal_answer['sources'])}*\n"
+                updated_note = (new_note + "\n" + addition) if new_note else addition
+                st.session_state.progress['notes'][note_key] = updated_note
+                st.session_state[notes_version_key] += 1
+                st.session_state.progress.setdefault("reference_checked", {})
+                st.session_state.progress["reference_checked"][note_key] = True
+                save_progress(selected_subject, st.session_state.progress)
+                st.session_state.temp_reveal_answer = None
+                st.toast("Added to notes!", icon="✅")
+                st.rerun()
+            if rv2.button("❌ Dismiss", key="reveal_dismiss", use_container_width=True):
+                st.session_state.temp_reveal_answer = None
+                st.rerun()
+    # --- END REFERENCE GAP-CHECK ---
+
     st.divider()
     st.subheader("🐍 Python Code (Optional)")
     st.session_state.progress.setdefault("code", {})
@@ -569,26 +824,35 @@ elif st.session_state.view == 'detail':
     )
 
 
-    st.subheader("🖼️ Image (Optional)")
+    st.subheader("🖼️ Images (Optional)")
     st.session_state.progress.setdefault("images", {})
-    current_image = st.session_state.progress["images"].get(note_key, "")
-    if current_image:
-        image_path = os.path.join(DATA_DIR, selected_subject, "images", current_image)
-        if os.path.exists(image_path): st.image(image_path, width=400)
-    uploaded_file = st.file_uploader("Upload an image:", type=["png", "jpg", "jpeg"], key=f"upload_{note_key}")
+    current_images = get_note_images(st.session_state.progress, note_key)
+    if current_images:
+        img_cols = st.columns(min(len(current_images), 4))
+        for i, img_name in enumerate(current_images):
+            image_path = os.path.join(DATA_DIR, selected_subject, "images", img_name)
+            with img_cols[i % len(img_cols)]:
+                if os.path.exists(image_path):
+                    st.image(image_path, width=200)
+                if st.button("🗑️ Remove", key=f"rm_img_{note_key}_{i}"):
+                    remaining = [n for j, n in enumerate(current_images) if j != i]
+                    st.session_state.progress["images"][note_key] = remaining
+                    save_progress(selected_subject, st.session_state.progress)
+                    st.rerun()
+    uploaded_file = st.file_uploader("Add an image:", type=["png", "jpg", "jpeg"], key=f"upload_{note_key}")
 
     # 🔴 CRITICAL FIX: Prevent infinite rerun loop
     if uploaded_file is not None:
-        safe_name = f"{note_key}_{uploaded_file.name}" 
-        
-        if safe_name != current_image:
+        safe_name = f"{note_key}_{uploaded_file.name}"
+
+        if safe_name not in current_images:
             image_dir = os.path.join(DATA_DIR, selected_subject, "images")
             os.makedirs(image_dir, exist_ok=True)
-            
+
             with open(os.path.join(image_dir, safe_name), "wb") as f:
                 f.write(uploaded_file.getbuffer())
-                
-            st.session_state.progress["images"][note_key] = safe_name
+
+            st.session_state.progress["images"][note_key] = current_images + [safe_name]
             save_progress(selected_subject, st.session_state.progress)
             st.toast("Image saved!", icon="✅")
             st.rerun()
@@ -689,7 +953,7 @@ elif st.session_state.view == 'pdf_reader':
                     st.caption(f"Brain: {ai_provider}")
                     # Only show local model selector if using Ollama
                     if ai_provider == "Local (Ollama)":
-                        model_name = st.selectbox("Model", ["llama3.2:3b", "llama3.2:1b"], label_visibility="collapsed")
+                        model_name = st.selectbox("Model", ["llama3.2:3b", "llama3.2:1b", TEXT_MODEL], label_visibility="collapsed")
                     else:
                         model_name = "gemini-2.0-flash" # Placeholder for logic
 
@@ -776,6 +1040,37 @@ elif st.session_state.view == 'pdf_reader':
                     if st.button("▶ Read Aloud", use_container_width=True):
                         f_path = generate_audio(clean_text)
                         if f_path: st.audio(f_path)
+
+elif st.session_state.view == 'dashboard':
+    st.header("📊 Dashboard")
+
+    streak = load_streak()
+    streak_cols = st.columns(2)
+    streak_cols[0].metric("🔥 Current Streak", f"{streak['current_streak']} day{'s' if streak['current_streak'] != 1 else ''}")
+    streak_cols[1].metric("🏆 Best Streak", f"{streak['longest_streak']} day{'s' if streak['longest_streak'] != 1 else ''}")
+
+    st.divider()
+
+    total_due = 0
+    rows = []
+    for subj in get_subjects():
+        subj_df = load_data(subj)
+        subj_progress = load_progress(subj)
+        noted_qids = {qid for qid, note in subj_progress.get('notes', {}).items() if note and note.strip()}
+        due_count = sum(1 for qid in noted_qids if srs.is_due(get_srs_entry(subj_progress, qid)))
+        total_due += due_count
+        rows.append({
+            "Subject": subj.replace('_', ' '),
+            "Notes": f"{len(noted_qids)}/{len(subj_df)}",
+            "Due Today": due_count,
+        })
+
+    st.metric("📅 Total Due Across All Subjects", total_due)
+    st.caption("Clear this to zero today - that's the whole job.")
+
+    st.divider()
+    st.subheader("Per-Subject Breakdown")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 else: # List View
     st.subheader("Chapter Progress (for current filter)")

@@ -76,6 +76,14 @@ notes = progress_data.get("notes", {})
 codes = progress_data.get("code", {})
 images = progress_data.get("images", {})
 
+def get_images(images_dict, stable_id):
+    """Images for a question, tolerating both the old single-filename-string format and
+    the newer list-of-filenames format (must match app.py's get_note_images)."""
+    val = images_dict.get(stable_id)
+    if not val:
+        return []
+    return [val] if isinstance(val, str) else list(val)
+
 # We consider any question with a note, code, or image entry as potentially exportable.
 exportable_qids = set(notes.keys()) | set(codes.keys()) | set(images.keys())
 flashcard_df = master_df[master_df['StableID'].isin(exportable_qids)].copy()
@@ -83,27 +91,27 @@ flashcard_df = master_df[master_df['StableID'].isin(exportable_qids)].copy()
 flashcard_list = []
 for _, row in flashcard_df.iterrows():
     stable_id = row['StableID']
-    
+
     # --- THIS IS THE FIX ---
     # Check if there is any content (note, code, or image) to justify creating a flashcard.
     note_content = notes.get(stable_id, "").strip()
     code_content = codes.get(stable_id, "").strip()
-    image_content = images.get(stable_id, "").strip()
+    image_list = get_images(images, stable_id)
 
-    if note_content or code_content or image_content:
+    if note_content or code_content or image_list:
         # --- END FIX ---
-        
+
         flashcard_data = {
             "question": row['Question'],
             "note": notes.get(stable_id, ""), # Use .get() to avoid errors if key is missing
             "code": codes.get(stable_id, ""),
-            "image": images.get(stable_id, ""),
+            "images": image_list,
             "chapter": row['Chapter'],
             "marks": int(row.get('Marks', 0))
         }
         flashcard_list.append(flashcard_data)
 
-        if image_content:
+        for image_content in image_list:
             source_image_path = os.path.join(subject_path, "images", image_content)
             if os.path.exists(source_image_path):
                 shutil.copy(source_image_path, DEPLOY_IMG_DIR)

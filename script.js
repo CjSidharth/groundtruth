@@ -106,9 +106,15 @@ document.addEventListener('DOMContentLoaded', () => {
             answerHTML += `<h3>Code:</h3><pre><code class="php">${escapedCode}</code></pre>`;
         }
 
-        // Logic for a single image string
-        if (currentCard.image && typeof currentCard.image === 'string' && currentCard.image.trim() !== "") {
-            answerHTML += `<h3>Output:</h3><img src="images/${currentCard.image}" alt="Output Image">`;
+        // Supports both the current multi-image "images" array and the older single-image
+        // "image" string field, in case a previously-exported deck hasn't been regenerated.
+        const imageList = Array.isArray(currentCard.images) ? currentCard.images
+            : (currentCard.image ? [currentCard.image] : []);
+        if (imageList.length > 0) {
+            answerHTML += `<h3>Output:</h3>`;
+            for (const img of imageList) {
+                answerHTML += `<img src="images/${img}" alt="Output Image">`;
+            }
         }
 
         answerEl.innerHTML = answerHTML;
