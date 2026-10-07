@@ -5,3 +5,4 @@ qb_deploy/
 .vscode/
 data/*/reference/.cache/
 __pycache__/
+context/
