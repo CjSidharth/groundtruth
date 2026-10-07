@@ -1,6 +1,6 @@
 # 📚 GroundTruth
 
-An AI-assisted exam-prep toolkit I built and used through my own exams (19 subjects, 6,748 questions). Turn messy university question-bank PDFs into a study workflow: **attempt answers yourself → get AI feedback grounded in your own reference PDFs → review on a spaced-repetition schedule → export offline flashcards and printable study guides.**
+An AI-assisted exam-prep toolkit I built and used through my own exams (a 6,748-question bank across 19 subjects). Turn messy university question-bank PDFs into a study workflow: **attempt answers yourself → get AI feedback grounded in your own reference PDFs → review on a spaced-repetition schedule → export offline flashcards and printable study guides.**
 
 | Component | What it does |
 |---|---|
