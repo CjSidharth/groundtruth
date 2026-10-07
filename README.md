@@ -1,6 +1,6 @@
-# 📚 Exam Prep Engine
+# 📚 GroundTruth
 
-An AI-assisted exam-prep toolkit. Turn messy university question-bank PDFs into a study workflow: **attempt answers yourself → get AI feedback grounded in your own reference PDFs → review on a spaced-repetition schedule → export offline flashcards and printable study guides.**
+An AI-assisted exam-prep toolkit I built and used through my own exams (19 subjects, 6,748 questions). Turn messy university question-bank PDFs into a study workflow: **attempt answers yourself → get AI feedback grounded in your own reference PDFs → review on a spaced-repetition schedule → export offline flashcards and printable study guides.**
 
 | Component | What it does |
 |---|---|
@@ -33,8 +33,8 @@ You need **at least one** of Ollama or a Gemini key for the AI features. Browsin
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/CjSidharth/qb.git
-cd qb
+git clone https://github.com/CjSidharth/groundtruth.git
+cd groundtruth
 ```
 
 ### 2. Create a virtual environment and install dependencies
@@ -88,7 +88,7 @@ Streamlit opens at <http://localhost:8501>. The first voice recording downloads 
 
 ## 📂 Adding your own subjects
 
-The app reads whatever is under `data/`:
+The app reads whatever is under `data/`. A tiny `Sample_Subject` is included so you can try it right away; my real question banks and notes aren't in this repo.
 
 ```
 data/

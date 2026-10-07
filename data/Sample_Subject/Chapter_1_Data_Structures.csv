@@ -1,0 +1,5 @@
+Category,Sr. No.,Question,Marks,CO,RBT Level
+Short Questions,1,What is the difference between a stack and a queue?,3,CO1,UN
+Short Questions,2,Why is binary search O(log n)?,3,CO1,UN
+Long Questions,3,Explain how a hash table handles collisions. Compare chaining and open addressing.,7,CO2,AP
+Long Questions,4,Explain Dijkstra's algorithm with an example. Why does it fail with negative edge weights?,7,CO2,AN

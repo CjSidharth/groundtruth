@@ -6,3 +6,13 @@ qb_deploy/
 data/*/reference/.cache/
 __pycache__/
 context/
+
+# Personal study data (keep it out of the public repo)
+data/*
+!data/Sample_Subject/
+progress/
+archives/
+legacy_data/
+qb/
+*.pdf
+.DS_Store
